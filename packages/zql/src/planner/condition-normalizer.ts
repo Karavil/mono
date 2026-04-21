@@ -89,15 +89,15 @@ function normalizeSimpleCondition(condition: SimpleCondition): Condition {
 
 function normalizeCorrelatedSubquery(
   condition: CorrelatedSubqueryCondition,
-): CorrelatedSubqueryCondition {
+): Condition {
   const {[planIdSymbol]: _planId, ...conditionWithoutPlanId} = condition;
-  return {
+  return collapseImpossibleCorrelatedSubquery({
     ...conditionWithoutPlanId,
     related: {
       ...condition.related,
       subquery: normalizePlannerAST(condition.related.subquery),
     },
-  };
+  });
 }
 
 function buildAnd(conditions: readonly Condition[]): Condition {
@@ -137,7 +137,9 @@ function buildOr(conditions: readonly Condition[]): Condition {
     return FALSE;
   }
 
-  const compacted = mergeEquivalentOrPredicates(deduped);
+  const compacted = absorbRedundantOrBranches(
+    mergeEquivalentOrPredicates(deduped),
+  );
 
   const factored = factorCommonConjuncts(compacted);
   if (factored) {
@@ -145,13 +147,18 @@ function buildOr(conditions: readonly Condition[]): Condition {
   }
 
   const merged = mergeSameRelationshipExists(compacted);
-  switch (merged.length) {
+  if (merged.some(isAlwaysTrue)) {
+    return TRUE;
+  }
+
+  const surviving = merged.filter(condition => !isAlwaysFalse(condition));
+  switch (surviving.length) {
     case 0:
       return FALSE;
     case 1:
-      return merged[0];
+      return surviving[0];
     default:
-      return {type: 'or', conditions: merged};
+      return {type: 'or', conditions: surviving};
   }
 }
 
@@ -364,6 +371,22 @@ function domainKey(domain: ColumnDomainBase): string {
   return stableStringify(domain.left);
 }
 
+function collapseImpossibleCorrelatedSubquery(
+  condition: CorrelatedSubqueryCondition,
+): Condition {
+  if (condition.scalar === true) {
+    return condition;
+  }
+  const {subquery} = condition.related;
+  const subqueryCannotEmitRows =
+    subquery.limit === 0 ||
+    (subquery.where !== undefined && isAlwaysFalse(subquery.where));
+  if (!subqueryCannotEmitRows) {
+    return condition;
+  }
+  return condition.op === 'EXISTS' ? FALSE : TRUE;
+}
+
 function buildInCondition(
   left: ValuePosition,
   values: readonly InLiteralValue[],
@@ -545,6 +568,52 @@ function factorCommonConjuncts(
   ]);
 }
 
+function absorbRedundantOrBranches(
+  conditions: readonly Condition[],
+): Condition[] {
+  const branches = conditions.map(condition => ({
+    keys:
+      condition.type === 'and'
+        ? new Set(condition.conditions.map(conditionKey))
+        : new Set([conditionKey(condition)]),
+  }));
+  const keep = conditions.map(() => true);
+
+  for (const [candidateIndex, candidate] of branches.entries()) {
+    if (!keep[candidateIndex]) {
+      continue;
+    }
+    for (const [branchIndex, branch] of branches.entries()) {
+      if (candidateIndex === branchIndex || !keep[branchIndex]) {
+        continue;
+      }
+      if (!branchSubsumes(candidate.keys, branch.keys)) {
+        continue;
+      }
+      if (
+        candidate.keys.size < branch.keys.size ||
+        candidateIndex < branchIndex
+      ) {
+        keep[branchIndex] = false;
+      }
+    }
+  }
+
+  return conditions.filter((_, index) => keep[index]);
+}
+
+function branchSubsumes(
+  candidate: ReadonlySet<string>,
+  branch: ReadonlySet<string>,
+): boolean {
+  for (const key of candidate) {
+    if (!branch.has(key)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function mergeSameRelationshipExists(
   conditions: readonly Condition[],
 ): Condition[] {
@@ -590,9 +659,9 @@ function mergeSameRelationshipExists(
 function mergeExistsGroup(
   template: CorrelatedSubqueryCondition,
   filters: readonly Condition[],
-): CorrelatedSubqueryCondition {
+): Condition {
   const where = buildOr(filters);
-  return {
+  return collapseImpossibleCorrelatedSubquery({
     ...template,
     related: {
       ...template.related,
@@ -601,7 +670,7 @@ function mergeExistsGroup(
         where: isAlwaysTrue(where) ? undefined : where,
       },
     },
-  };
+  });
 }
 
 function mergeableExistsKey(condition: Condition): string | undefined {

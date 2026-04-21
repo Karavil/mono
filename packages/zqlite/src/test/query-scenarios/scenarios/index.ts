@@ -5,6 +5,7 @@ import contradictoryParentDomain from './contradictory-parent-domain.ts';
 import duplicateExistsOrDedupe from './duplicate-exists-or-dedupe.ts';
 import explicitFlipFalse from './explicit-flip-false.ts';
 import explicitFlipTrue from './explicit-flip-true.ts';
+import impossibleExistsOrParentFilter from './impossible-exists-or-parent-filter.ts';
 import mixedOrWithFalseAndMembership from './mixed-or-with-false-and-membership.ts';
 import orWithFalseBranch from './or-with-false-branch.ts';
 import parentOrExistsUnionRoots from './parent-or-exists-union-roots.ts';
@@ -27,6 +28,7 @@ export default [
   teacherFilterWithMembership,
   explicitFlipFalse,
   explicitFlipTrue,
+  impossibleExistsOrParentFilter,
   orWithFalseBranch,
   mixedOrWithFalseAndMembership,
   twoStudentMembershipOr,

@@ -199,6 +199,8 @@ test('factors common parent filters before merging child exists branches', () =>
 
 test('absorbs redundant branches after factoring common predicates', () => {
   const active = eq('active', true);
+  const archived = eq('archived', false);
+  const pending = eq('status', 'pending');
 
   expect(
     normalizeWhere({
@@ -212,6 +214,63 @@ test('absorbs redundant branches after factoring common predicates', () => {
       ],
     }),
   ).toEqual(active);
+
+  expect(
+    normalizeWhere({
+      type: 'or',
+      conditions: [
+        active,
+        {
+          type: 'and',
+          conditions: [active, pending],
+        },
+        archived,
+      ],
+    }),
+  ).toEqual({
+    type: 'or',
+    conditions: [active, archived],
+  });
+
+  expect(
+    normalizeWhere({
+      type: 'or',
+      conditions: [
+        {
+          type: 'and',
+          conditions: [active, pending],
+        },
+        {
+          type: 'and',
+          conditions: [active, pending, archived],
+        },
+      ],
+    }),
+  ).toEqual({
+    type: 'and',
+    conditions: [active, pending],
+  });
+});
+
+test('collapses impossible exists subqueries', () => {
+  const active = eq('active', true);
+
+  expect(normalizeWhere(exists(FALSE))).toEqual(FALSE);
+  expect(normalizeWhere(exists(FALSE, {op: 'NOT EXISTS'}))).toEqual(TRUE);
+  expect(normalizeWhere(exists(undefined, {subquery: {limit: 0}}))).toEqual(
+    FALSE,
+  );
+
+  expect(
+    normalizeWhere({
+      type: 'or',
+      conditions: [active, exists(FALSE)],
+    }),
+  ).toEqual(active);
+
+  expect(normalizeWhere(exists(FALSE, {scalar: true}))).toEqual(
+    exists(FALSE, {scalar: true}),
+  );
 });
 
 test('does not merge exists branches with different semantics', () => {
@@ -315,6 +374,18 @@ test('is idempotent for generated simple filters', () => {
   );
 });
 
+test('is idempotent for generated planner filters with correlated subqueries', () => {
+  fc.assert(
+    fc.property(plannerConditionArbitrary(), condition => {
+      const once = normalizePlannerAST({table: 'users', where: condition});
+      const twice = normalizePlannerAST(once);
+
+      expect(twice).toEqual(once);
+    }),
+    {numRuns: 1_000},
+  );
+});
+
 function normalizeWhere(where: Condition): Condition | undefined {
   return normalizePlannerAST({table: 'users', where}).where;
 }
@@ -390,6 +461,43 @@ function filterConditionArbitrary(): fc.Arbitrary<NoSubqueryCondition> {
       }),
     ),
   })).condition as fc.Arbitrary<NoSubqueryCondition>;
+}
+
+function plannerConditionArbitrary(): fc.Arbitrary<Condition> {
+  return fc.letrec(tie => ({
+    condition: fc.oneof(
+      simpleConditionArbitrary(),
+      correlatedSubqueryConditionArbitrary(),
+      fc.record({
+        type: fc.constant('and' as const),
+        conditions: fc.array(tie('condition'), {maxLength: 4}),
+      }),
+      fc.record({
+        type: fc.constant('or' as const),
+        conditions: fc.array(tie('condition'), {maxLength: 4}),
+      }),
+    ),
+  })).condition as fc.Arbitrary<Condition>;
+}
+
+function correlatedSubqueryConditionArbitrary(): fc.Arbitrary<CorrelatedSubqueryCondition> {
+  return fc.record({
+    type: fc.constant('correlatedSubquery' as const),
+    op: fc.constantFrom('EXISTS' as const, 'NOT EXISTS' as const),
+    flip: fc.option(fc.boolean(), {nil: undefined}),
+    scalar: fc.option(fc.boolean(), {nil: undefined}),
+    related: fc.record({
+      correlation: fc.constant({
+        parentField: ['id'],
+        childField: ['userId'],
+      } as const),
+      subquery: fc.record({
+        table: fc.constant('posts'),
+        where: fc.option(filterConditionArbitrary(), {nil: undefined}),
+        limit: fc.option(fc.constantFrom(0, 1, 10), {nil: undefined}),
+      }),
+    }),
+  });
 }
 
 function simpleConditionArbitrary(): fc.Arbitrary<NoSubqueryCondition> {
