@@ -33,6 +33,7 @@ import type {Input, InputBase, Storage} from '../ivm/operator.ts';
 import {InputIntersection, InputUnion} from '../ivm/set-operators.ts';
 import {Skip} from '../ivm/skip.ts';
 import type {Source, SourceInput} from '../ivm/source.ts';
+import {StripRelationships} from '../ivm/strip-relationships.ts';
 import {Take} from '../ivm/take.ts';
 import {UnionFanIn} from '../ivm/union-fan-in.ts';
 import {UnionFanOut} from '../ivm/union-fan-out.ts';
@@ -458,8 +459,8 @@ function applyRootUnionBranches(
   //
   // Each recursive branch keeps the same ordering and split-edit keys as the
   // original AST, so the union can merge streams without re-sorting.
-  const inputs = branches.map((branch, index) =>
-    buildPipelineInternal(
+  const inputs = branches.map((branch, index) => {
+    const input = buildPipelineInternal(
       {
         ...ast,
         where: branch,
@@ -468,14 +469,34 @@ function applyRootUnionBranches(
       queryID,
       `${name}:or-${index}`,
       partitionKey,
-    ),
-  );
+    );
+    return stripRootUnionBranchRelationships(input, delegate, name, index);
+  });
 
   const union = new InputUnion(inputs);
   for (const input of inputs) {
     delegate.addEdge(input, union);
   }
   return delegate.decorateInput(union, `${name}:input-union`);
+}
+
+function stripRootUnionBranchRelationships(
+  input: Input,
+  delegate: BuilderDelegate,
+  name: string,
+  index: number,
+): Input {
+  // Root union is a set of parent rows, not a way to expose relationship
+  // payloads. A flipped EXISTS branch may temporarily attach its child rows so
+  // the branch can prove the EXISTS is true, but those rows are condition-only
+  // data. Strip them before the branch joins the union so every branch exposes
+  // the same plain parent-row schema.
+  if (Object.keys(input.getSchema().relationships).length === 0) {
+    return input;
+  }
+  const stripped = new StripRelationships(input);
+  delegate.addEdge(input, stripped);
+  return delegate.decorateInput(stripped, `${name}:or-${index}:strip-related`);
 }
 
 function getRootUnionBranches(ast: AST): readonly Condition[] | undefined {

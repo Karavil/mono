@@ -19,6 +19,7 @@ import {
 import type {SourceSchema} from './schema.ts';
 import {InputIntersection, InputUnion} from './set-operators.ts';
 import {consume, type Stream} from './stream.ts';
+import {StripRelationships} from './strip-relationships.ts';
 
 const schema: SourceSchema = {
   tableName: 'assignment',
@@ -202,6 +203,57 @@ describe('InputUnion', () => {
       ChangeType.CHILD,
     ]);
   });
+
+  test('requires relationship-free branch streams', () => {
+    const related = new MutableInput([], {
+      ...schema,
+      relationships: {children: schema},
+    });
+
+    expect(() => new InputUnion([related])).toThrow(
+      'input union requires inputs without relationships',
+    );
+  });
+});
+
+describe('StripRelationships', () => {
+  test('removes relationship schema and fetched relationship payloads', () => {
+    const input = new MutableInput(
+      [
+        node(
+          {id: 1, value: 10},
+          {
+            children: () => [node({id: 99, value: 99})],
+          },
+        ),
+      ],
+      {
+        ...schema,
+        relationships: {children: schema},
+      },
+    );
+
+    const stripped = new StripRelationships(input);
+
+    expect(stripped.getSchema().relationships).toEqual({});
+    expect(
+      Array.from(skipYields(stripped.fetch({})), node => node.relationships),
+    ).toEqual([{}]);
+  });
+
+  test('ignores relationship-only pushes', () => {
+    const input = new MutableInput([], {
+      ...schema,
+      relationships: {children: schema},
+    });
+    const stripped = new StripRelationships(input);
+    const sink = new RecordingOutput();
+    stripped.setOutput(sink);
+
+    input.push(childChange(node({id: 1, value: 10})));
+
+    expect(sink.changes).toEqual([]);
+  });
 });
 
 describe('InputIntersection', () => {
@@ -235,6 +287,28 @@ describe('InputIntersection', () => {
     expect(Array.from(skipYields(intersection.fetch({})), n => n.row)).toEqual([
       {id: 1, value: 10},
     ]);
+  });
+
+  test('fetch streams the representative branch after reading other key sets', () => {
+    const events: string[] = [];
+    const left = new LoggingInput(
+      'first',
+      [node({id: 1, value: 10}), node({id: 2, value: 20})],
+      events,
+    );
+    const right = new LoggingInput(
+      'other',
+      [node({id: 2, value: 200})],
+      events,
+    );
+    const intersection = new InputIntersection([left, right], ['id']);
+
+    const iter = intersection.fetch({})[Symbol.iterator]();
+    const result = iter.next();
+
+    expect(result.done).toBe(false);
+    expect(result.value).toEqual(node({id: 2, value: 20}));
+    expect(events).toEqual(['other:start', 'other:end', 'first:start']);
   });
 
   test('push emits when a key enters or leaves the intersection', () => {
@@ -310,10 +384,12 @@ describe('InputIntersection', () => {
 
 class MutableInput implements Input {
   rows: Node[];
+  readonly #schema: SourceSchema;
   #output: Output | undefined;
 
-  constructor(rows: Node[]) {
+  constructor(rows: Node[], sourceSchema: SourceSchema = schema) {
     this.rows = rows;
+    this.#schema = sourceSchema;
   }
 
   setOutput(output: Output): void {
@@ -321,7 +397,7 @@ class MutableInput implements Input {
   }
 
   getSchema(): SourceSchema {
-    return schema;
+    return this.#schema;
   }
 
   *fetch(req: FetchRequest): Stream<Node | 'yield'> {
@@ -340,6 +416,23 @@ class MutableInput implements Input {
   destroy(): void {}
 }
 
+class LoggingInput extends MutableInput {
+  readonly #label: string;
+  readonly #events: string[];
+
+  constructor(label: string, rows: Node[], events: string[]) {
+    super(rows);
+    this.#label = label;
+    this.#events = events;
+  }
+
+  override *fetch(req: FetchRequest): Stream<Node | 'yield'> {
+    this.#events.push(`${this.#label}:start`);
+    yield* super.fetch(req);
+    this.#events.push(`${this.#label}:end`);
+  }
+}
+
 class RecordingOutput implements Output {
   readonly changes: Change[] = [];
 
@@ -348,8 +441,8 @@ class RecordingOutput implements Output {
   }
 }
 
-function node(row: Row): Node {
-  return {row, relationships: {}};
+function node(row: Row, relationships: Node['relationships'] = {}): Node {
+  return {row, relationships};
 }
 
 function childChange(parent: Node): Change {

@@ -98,14 +98,21 @@ export function runQueryScenario<S extends Schema>(
 
   const builder = createBuilder(scenario.schema);
   const ast = asQueryInternals(scenario.query(builder)).ast;
-  const planDebugger = new AccumulatorDebugger();
-  const optimizedAST = planQueryOnce(ast, costModel, planDebugger);
+  const optimizedAST = planQueryOnce(ast, costModel, new AccumulatorDebugger());
 
   const debug = new ScenarioDebug();
   const delegate = newQueryDelegate(lc, testLogConfig, db, scenario.schema);
   delegate.debug = debug;
 
-  const input = buildPipeline(optimizedAST, delegate, 'query-scenario');
+  const planDebugger = new AccumulatorDebugger();
+  const input = buildPipeline(
+    ast,
+    delegate,
+    'query-scenario',
+    costModel,
+    lc,
+    planDebugger,
+  );
   const sink = new Catch(input);
   // SQL shape alone can be misleading because repeated query text can hide
   // multiple physical scans with different bind values. ScenarioDebug keeps the

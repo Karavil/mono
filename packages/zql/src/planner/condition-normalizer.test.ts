@@ -157,6 +157,28 @@ test('merges OR exists branches over the same relationship', () => {
   );
 });
 
+test('merges OR exists branches after implicit ordering is completed', () => {
+  expect(
+    normalizeWhere({
+      type: 'or',
+      conditions: [
+        exists(eq('title', 'hello'), {subquery: {orderBy: [['id', 'asc']]}}),
+        exists(eq('title', 'world'), {subquery: {orderBy: [['id', 'asc']]}}),
+      ],
+    }),
+  ).toEqual(
+    exists(
+      {
+        type: 'simple',
+        left: {type: 'column', name: 'title'},
+        op: 'IN',
+        right: {type: 'literal', value: ['hello', 'world']},
+      },
+      {subquery: {orderBy: [['id', 'asc']]}},
+    ),
+  );
+});
+
 test('preserves unrestricted exists when merging narrower exists branches', () => {
   expect(
     normalizeWhere({

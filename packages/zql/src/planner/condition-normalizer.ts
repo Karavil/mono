@@ -686,12 +686,15 @@ function mergeableExistsKey(condition: Condition): string | undefined {
   if (
     subquery.related !== undefined ||
     subquery.start !== undefined ||
-    subquery.limit !== undefined ||
-    subquery.orderBy !== undefined
+    subquery.limit !== undefined
   ) {
     return undefined;
   }
 
+  // EXISTS only asks whether at least one child row exists. Without related
+  // rows, start, or limit, child ordering cannot affect that answer. Ignore
+  // orderBy here so production callers that completed implicit primary-key
+  // ordering before planning still get the same logical EXISTS merge.
   const mergeShape: CorrelatedSubquery = {
     ...related,
     subquery: {

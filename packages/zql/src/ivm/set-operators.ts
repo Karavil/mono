@@ -55,9 +55,10 @@ import {mergeFetches} from './union-fan-in.ts';
  * The visible result did not gain a new primary key. The visible copy changed,
  * so downstream receives EDIT(value 20 -> 10).
  *
- * This operator deliberately does not try to merge relationship payloads from
- * duplicate rows. The builder only uses it for root queries without related
- * rows, start, or limit.
+ * This operator intentionally accepts only plain row streams with no
+ * relationships. The builder strips condition-only relationship payloads from
+ * branch pipelines before they enter the union. That keeps the schema honest:
+ * every node emitted by the union has the same shape that the union advertises.
  */
 export class InputUnion implements Input {
   readonly #inputs: readonly Input[];
@@ -275,19 +276,18 @@ export class InputIntersection implements Input {
 
   *fetch(req: FetchRequest): Stream<Node | 'yield'> {
     // Fetch the other branch id sets first, then stream rows from the first
-    // branch in its own order. yieldedKeys is the set part of the contract:
-    // even if the first branch has duplicate rows for an id, the intersection
-    // emits that id only once for the parent lookup.
+    // branch in its own order. We intentionally materialize id sets for the
+    // non-representative branches, not full rows from the first branch:
+    //
+    //   rest branches -> Set(parent id)
+    //                          |
+    //                          v
+    //   first branch stream -> keep ids present in every Set
+    //
+    // yieldedKeys is the set part of the contract: even if the first branch
+    // has duplicate rows for an id, the intersection emits that id only once
+    // for the parent lookup.
     const [first, ...rest] = this.#inputs;
-    const firstNodes: Node[] = [];
-    for (const node of first.fetch(req)) {
-      if (node === 'yield') {
-        yield node;
-        continue;
-      }
-      firstNodes.push(node);
-    }
-
     const matchingKeys: ReadonlySet<string>[] = [];
     for (const input of rest) {
       const keys = new Set<string>();
@@ -302,7 +302,11 @@ export class InputIntersection implements Input {
     }
 
     const yieldedKeys = new Set<string>();
-    for (const node of firstNodes) {
+    for (const node of first.fetch(req)) {
+      if (node === 'yield') {
+        yield node;
+        continue;
+      }
       const key = rowKey(node.row, this.#key);
       if (!yieldedKeys.has(key) && matchingKeys.every(keys => keys.has(key))) {
         yieldedKeys.add(key);
@@ -431,34 +435,22 @@ function mergeInputSchemas(
   operatorName: string,
   inputs: readonly Input[],
 ): SourceSchema {
-  // The set operators sit between complete pipelines. They can only compose
-  // pipelines that expose the same row stream shape. Relationships are merged
-  // by name for the schema contract, but duplicate row relationship payloads
-  // are not merged by InputUnion. The builder avoids that case for root union.
+  // InputUnion dedupes duplicate parent rows by choosing one visible copy. It
+  // cannot honestly merge relationship payloads from multiple copies, so it
+  // refuses relationship-bearing inputs. Callers that use relationships as
+  // private filter evidence must strip them before constructing the union.
   const schema = {
     ...firstInputSchema(operatorName, inputs),
-    relationships: {
-      ...inputs[0].getSchema().relationships,
-    },
+    relationships: {},
   } satisfies Writable<SourceSchema>;
 
-  const relationshipsFromBranches = new Set<string>();
-  for (const input of inputs.slice(1)) {
+  for (const input of inputs) {
     const inputSchema = input.getSchema();
     assertCompatibleSchema(operatorName, schema, inputSchema);
-    for (const [relationshipName, relationshipSchema] of Object.entries(
-      inputSchema.relationships,
-    )) {
-      if (relationshipName in schema.relationships) {
-        continue;
-      }
-      assert(
-        !relationshipsFromBranches.has(relationshipName),
-        `Relationship ${relationshipName} exists in multiple upstream inputs to ${operatorName}`,
-      );
-      schema.relationships[relationshipName] = relationshipSchema;
-      relationshipsFromBranches.add(relationshipName);
-    }
+    assert(
+      Object.keys(inputSchema.relationships).length === 0,
+      `${operatorName} requires inputs without relationships`,
+    );
   }
 
   return schema;
