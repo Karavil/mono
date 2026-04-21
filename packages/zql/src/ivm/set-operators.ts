@@ -24,20 +24,25 @@ import {type Stream} from './stream.ts';
 import {mergeFetches} from './union-fan-in.ts';
 
 /**
- * Physical OR over multiple independently optimized root pipelines.
+ * Merges the results of an OR query that has more than one good starting point.
  *
- * Conceptually:
+ * Example user query:
  *
- *   branch 0: parent WHERE teacher_id = 1
- *   branch 1: child WHERE student_id = 'student-1' -> parent
+ *   issues where status = 'open'
+ *     OR issue has label 'bug'
  *
- *                    InputUnion
- *                  /            \
- *          parent rows        parent rows
+ * Optimized scan:
  *
- * Fetch is a sorted merge by the output schema comparator. Duplicate primary
- * keys are represented by the first branch in input order. Push has to preserve
- * that same "earliest branch owns the row" rule, including handoffs:
+ *   branch 0: scan issue(status = 'open')
+ *   branch 1: scan issue_label(label = 'bug') -> look up issue
+ *
+ *                         InputUnion
+ *                       /            \
+ *               issue rows        issue rows
+ *
+ * InputUnion streams those issue rows in final sort order and removes duplicate
+ * issue ids. If the same issue appears in both branches, the earlier branch is
+ * the visible copy. Push has to preserve that same rule, including handoffs:
  *
  *   before push:
  *     branch 0: empty
@@ -49,8 +54,8 @@ import {mergeFetches} from './union-fan-in.ts';
  *     branch 1: {id: 1, value: 20}
  *     output:   {id: 1, value: 10}
  *
- * The visible result did not gain a new primary key. Its representative row
- * changed, so downstream receives EDIT(value 20 -> 10).
+ * The visible result did not gain a new primary key. The visible copy changed,
+ * so downstream receives EDIT(value 20 -> 10).
  *
  * This operator deliberately does not try to merge relationship payloads from
  * duplicate rows. The builder only uses it for root queries without related
@@ -152,7 +157,7 @@ export class InputUnion implements Input {
     // ADD has three cases:
     //
     //   no other branch has pk       => new visible row, emit ADD
-    //   later branch has pk          => representative handoff, emit EDIT
+    //   later branch has pk          => visible-copy handoff, emit EDIT
     //   earlier branch has pk        => still represented earlier, emit nothing
     const match = yield* this.#firstMatchingInputExcept(pusher, node);
     if (!match) {
@@ -172,7 +177,7 @@ export class InputUnion implements Input {
     // REMOVE mirrors ADD:
     //
     //   no other branch has pk       => row disappeared, emit REMOVE
-    //   later branch has pk          => representative handoff, emit EDIT
+    //   later branch has pk          => visible-copy handoff, emit EDIT
     //   earlier branch has pk        => still represented earlier, emit nothing
     const match = yield* this.#firstMatchingInputExcept(pusher, node);
     if (!match) {
@@ -192,7 +197,7 @@ export class InputUnion implements Input {
     {readonly index: number; readonly node: Node} | undefined
   > {
     // Search in input order because fetch uses input order as the tie-break for
-    // duplicate primary keys. Push must discover the same representative row.
+    // duplicate primary keys. Push must discover the same visible copy.
     const constraint = keyConstraint(node.row, this.#schema.primaryKey);
     for (const [index, input] of this.#inputs.entries()) {
       if (input === pusher) {
@@ -221,24 +226,31 @@ export class InputUnion implements Input {
 }
 
 /**
- * Physical AND over same-relationship EXISTS branches.
+ * Keeps only parent ids that appear in every required related-table scan.
  *
- * Conceptually:
+ * Example user query:
  *
- *   child WHERE student_id = 'student-1'  -> keys {101, 102}
- *   child WHERE student_id = 'student-2'  -> keys {102, 1500}
+ *   issues where issue has label 'bug'
+ *     AND issue has label 'urgent'
  *
- *             InputIntersection on assignment_id
+ * Optimized scan:
+ *
+ *   issue_label(label = 'bug')    -> issue ids {10, 20}
+ *   issue_label(label = 'urgent') -> issue ids {20, 30}
+ *
+ *             InputIntersection on issue_id
  *                         |
- *                    key {102}
+ *                    issue id {20}
+ *                         |
+ *                   look up issue 20
  *
- * The output row is a representative child row from the first input for each
- * intersected key. The following FlippedJoin uses that key to fetch the parent.
- *
- * The builder only creates this operator when every child branch is unique for
- * the correlation key. That keeps "one representative per key" equivalent to
- * EXISTS semantics. If a future caller wants arbitrary many rows per key, this
- * operator would need row-bag semantics instead of key-set semantics.
+ * The important idea is simple: do the cheap child-table lookups first, keep
+ * only ids found in every branch, then fetch the parent rows. The builder only
+ * creates this operator when each child branch can produce at most one row for
+ * a given parent id. That keeps "one row representing issue id 20" equivalent
+ * to EXISTS semantics. If a future caller wants arbitrary many rows per parent
+ * id, this operator would need to track duplicate child rows instead of just
+ * ids.
  */
 export class InputIntersection implements Input {
   readonly #inputs: readonly Input[];
@@ -265,10 +277,10 @@ export class InputIntersection implements Input {
   }
 
   *fetch(req: FetchRequest): Stream<Node | 'yield'> {
-    // Fetch rest branch key sets first, then stream first-branch
-    // representatives in first-branch order. yieldedKeys is the key-set part of
-    // the contract: even if the first branch has duplicate rows for a key, the
-    // intersection emits one representative key for the parent lookup.
+    // Fetch the other branch id sets first, then stream rows from the first
+    // branch in its own order. yieldedKeys is the set part of the contract:
+    // even if the first branch has duplicate rows for an id, the intersection
+    // emits that id only once for the parent lookup.
     const [first, ...rest] = this.#inputs;
     const firstNodes: Node[] = [];
     for (const node of first.fetch(req)) {
@@ -354,9 +366,9 @@ export class InputIntersection implements Input {
   }
 
   *#pushAdd(node: Node, pusher: Input): Generator<'yield'> {
-    // A key enters the intersection only when every other branch has that key.
-    // Non-first branches emit the first input's representative, because fetch
-    // always represents an intersected key with a first-input row.
+    // An id enters the intersection only when every other branch has that id.
+    // Non-first branches emit the first input's row, because fetch always uses
+    // the first branch as the visible copy for an intersected id.
     if (!(yield* this.#allOtherInputsHaveMatch(pusher, node))) {
       return;
     }
@@ -364,21 +376,21 @@ export class InputIntersection implements Input {
       yield* this.#output.push(makeAddChange(node), this);
       return;
     }
-    const representative = yield* firstMatchingNode(
+    const visibleCopy = yield* firstMatchingNode(
       this.#inputs[0],
       keyConstraint(node.row, this.#key),
     );
-    if (representative) {
-      yield* this.#output.push(makeAddChange(representative), this);
+    if (visibleCopy) {
+      yield* this.#output.push(makeAddChange(visibleCopy), this);
     }
   }
 
   *#pushRemove(node: Node, pusher: Input): Generator<'yield'> {
-    // A key leaves the intersection when this branch no longer has it and all
+    // An id leaves the intersection when this branch no longer has it and all
     // other branches still do. For the first branch, removing the current
-    // representative is visible even if another first-branch row with the same
-    // key remains, because fetch would have emitted the removed representative
-    // before the change.
+    // visible copy is visible even if another first-branch row with the same
+    // id remains, because fetch would have emitted the removed row before the
+    // change.
     const constraint = keyConstraint(node.row, this.#key);
     if (
       pusher !== this.#inputs[0] &&
@@ -393,12 +405,9 @@ export class InputIntersection implements Input {
       yield* this.#output.push(makeRemoveChange(node), this);
       return;
     }
-    const representative = yield* firstMatchingNode(
-      this.#inputs[0],
-      constraint,
-    );
-    if (representative) {
-      yield* this.#output.push(makeRemoveChange(representative), this);
+    const visibleCopy = yield* firstMatchingNode(this.#inputs[0], constraint);
+    if (visibleCopy) {
+      yield* this.#output.push(makeRemoveChange(visibleCopy), this);
     }
   }
 
@@ -406,8 +415,8 @@ export class InputIntersection implements Input {
     pusher: InputBase,
     node: Node,
   ): Generator<'yield', boolean> {
-    // This tests key presence, not row equality. EXISTS only cares whether each
-    // branch can produce at least one child row for the parent correlation key.
+    // This tests id presence, not row equality. EXISTS only cares whether each
+    // branch can produce at least one related row for the parent id.
     const constraint = keyConstraint(node.row, this.#key);
     for (const input of this.#inputs) {
       if (input === pusher) {

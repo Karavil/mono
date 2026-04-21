@@ -272,35 +272,39 @@ function buildPipelineInternal(
   }
 
   // Two narrow physical rewrites run before the generic source/filter/join
-  // pipeline below. They are not boolean normalizations. They replace a broad
-  // parent scan with a plan that starts from selective roots once the planner
-  // has marked at least one EXISTS as flipped.
+  // pipeline below. These do not change the meaning of the WHERE clause. They
+  // only choose a better place to start reading rows.
   //
-  // OR shape:
+  // OR example:
   //
-  //   parent WHERE A OR EXISTS(child WHERE B)
+  //   User query:
+  //     issues where status = 'open'
+  //       OR issue has label 'bug'
   //
-  // becomes:
+  //   Optimized scan:
+  //     scan issue(status = 'open')
+  //       UNION by issue.id
+  //     scan issue_label(label = 'bug') -> look up issue
   //
-  //   parent WHERE A        child WHERE B
-  //          |                   |
-  //          |             lookup parent by FK
-  //          |                   |
-  //      parent rows        parent rows
-  //              \          /
-  //               InputUnion
+  // The broad plan would scan all issues and ask "does either branch match?"
+  // for every row. The optimized plan starts from both selective doorways into
+  // issue rows, then dedupes by issue.id.
   //
-  // AND shape:
+  // AND example:
   //
-  //   parent WHERE EXISTS(child WHERE B) AND EXISTS(child WHERE C)
+  //   User query:
+  //     issues where issue has label 'bug'
+  //       AND issue has label 'urgent'
   //
-  // becomes:
+  //   Optimized scan:
+  //     scan issue_label(label = 'bug')    -> issue ids
+  //       INTERSECT issue ids
+  //     scan issue_label(label = 'urgent') -> issue ids
+  //       -> look up issue
   //
-  //   child WHERE B   child WHERE C
-  //        \             /
-  //       InputIntersection on child correlation key
-  //                 |
-  //          FlippedJoin to parent
+  // The broad plan would load issues after the first label match, then probe
+  // the second label row-by-row. The optimized plan first finds the issue ids
+  // that appear in both child scans, then loads only those issues.
   //
   // Each rewrite has its own strict guard below. If a query needs a shape the
   // new physical operator cannot preserve, it falls through to the older
@@ -432,16 +436,18 @@ function applyRootUnionBranches(
   name: string,
   partitionKey?: CompoundKey,
 ): Input {
-  // Run every OR branch as its own root query, then merge by primary key.
-  // This is the physical equivalent of SQLite's multi-index OR strategy:
+  // Run every OR branch as its own root query, then merge by primary key. A
+  // root is just the table/index we choose to scan first. This is the physical
+  // equivalent of SQLite's multi-index OR strategy:
   //
-  //   OR
-  //     teacher_id = 1
-  //     EXISTS(membership student_id = 'student-1')
+  //   User query:
+  //     issue.status = 'open'
+  //       OR EXISTS(issue_label WHERE label = 'bug')
   //
-  //   parent root: teacher_id = 1
-  //   child root:  membership student_id = 'student-1' -> parent lookup
-  //   union:       sorted primary-key dedupe
+  //   Optimized scan:
+  //     issue WHERE status = 'open'
+  //       UNION by issue.id
+  //     issue_label WHERE label = 'bug' -> issue lookup
   //
   // Each recursive branch keeps the same ordering and split-edit keys as the
   // original AST, so the union can merge streams without re-sorting.
@@ -481,9 +487,9 @@ function getRootUnionBranches(ast: AST): readonly Condition[] | undefined {
 
   const branches = ast.where.conditions;
 
-  // At least one branch must already be source driven by a flipped EXISTS.
-  // Otherwise a root union would just split a query that the existing source
-  // or filter pipeline can already handle.
+  // At least one branch must already be planned to start from a related table.
+  // Otherwise root union would just split a simple parent-table scan into
+  // smaller scans without buying us anything.
   if (!branches.some(conditionIncludesFlippedSubqueryAtAnyLevel)) {
     return undefined;
   }
@@ -509,18 +515,22 @@ function applySameRelationshipExistsIntersection(
   end: Input,
   name: string,
 ): Input {
-  // Build the child side before the parent lookup:
+  // Build the child side before the parent lookup. In plain English:
+  // find the issue ids that satisfy every sibling EXISTS first, then load the
+  // issue rows for only those ids.
   //
-  //   assignment_to_student WHERE student_id = 'student-1'
-  //                 intersect by assignment_id
-  //   assignment_to_student WHERE student_id = 'student-2'
-  //                 |
-  //          assignment WHERE id = assignment_id
+  //   User query:
+  //     EXISTS(issue_label WHERE label = 'bug')
+  //       AND EXISTS(issue_label WHERE label = 'urgent')
   //
-  // The resulting InputIntersection emits child rows whose correlation key is
-  // present in every sibling EXISTS branch. FlippedJoin then performs the
-  // reduced parent lookup. This avoids loading a parent row after the first
-  // child scan only to probe the second child relationship row-by-row.
+  //   Optimized scan:
+  //     issue_label WHERE label = 'bug'
+  //       INTERSECT by issue_id
+  //     issue_label WHERE label = 'urgent'
+  //       -> issue WHERE id = issue_id
+  //
+  // This avoids loading an issue after the first label match only to probe the
+  // second label relationship row-by-row.
   const {conditions, related} = intersection;
   const childInputs = conditions.map((condition, index) =>
     buildPipelineInternal(
@@ -613,17 +623,18 @@ function getSameRelationshipExistsIntersection(
     return undefined;
   }
 
-  // InputIntersection is a key-set operator. It emits one representative row
-  // per child correlation key, so each branch must be unique for that key.
-  // If a branch could return two child rows for the same parent, intersecting
-  // keys would no longer match the row-level EXISTS stream semantics.
+  // InputIntersection works with ids, not duplicate child rows: "which parent
+  // ids appeared in every related-table scan?" Because the operator keeps one
+  // child row for each parent id, each branch must prove it can produce at
+  // most one child row for the id it contributes.
   //
-  //   child PK:        [assignment_id, student_id]
-  //   correlation key: [assignment_id]
-  //   child filter:    student_id = 'student-1'
+  //   child table:     issue_label
+  //   child PK:        [issue_id, label]
+  //   parent id field: issue_id
+  //   child filter:    label = 'bug'
   //
-  // The correlation key plus the child filter covers the child PK, so this
-  // branch can produce at most one row for each assignment_id.
+  // issue_id plus label covers the child PK, so this branch can produce at
+  // most one issue_label row for each issue_id.
   if (
     candidates.some(
       candidate =>
@@ -645,16 +656,16 @@ function getSameRelationshipExistsIntersection(
 function getIntersectableExists(
   condition: Condition,
 ): CorrelatedSubqueryCondition | undefined {
-  // The AND intersection rewrite is only valid for the simple shape below:
+  // The AND intersection rewrite is only valid for this simple shape:
   //
-  //   EXISTS child
-  //     where child filters have no nested EXISTS
-  //     with no child related/start/limit
+  //   EXISTS(related table)
+  //     where related-table filters have no nested EXISTS
+  //     with no related rows, cursor start, or limit inside the EXISTS
   //
   // Nested relationships, cursors, and limits can make "does this parent key
-  // exist?" depend on more than the child predicate's key domain. In that
-  // world, intersecting child key sets could skip rows that the original
-  // sibling EXISTS checks would have accepted.
+  // exist?" depend on more than the related table's filter. In that world,
+  // intersecting related-table ids could skip rows that the original sibling
+  // EXISTS checks would have accepted.
   const exists = asCorrelatedSubqueryCondition(condition);
   if (!exists) {
     return undefined;
@@ -723,19 +734,20 @@ function isUniquePerCorrelationKey(
   condition: CorrelatedSubqueryCondition,
   childPrimaryKey: readonly string[],
 ): boolean {
-  // Prove:
+  // Prove that a child scan contributes at most one row per parent id:
   //
-  //   correlation child fields + literal equality filters cover child PK
+  //   parent id field + literal equality filters cover child PK
   //
   // Example:
   //
-  //   child PK:          [assignment_id, student_id]
-  //   correlation key:   [assignment_id]
-  //   child predicate:   student_id = 'student-1'
+  //   child table:    issue_label
+  //   child PK:       [issue_id, label]
+  //   parent id field: issue_id
+  //   child filter:   label = 'bug'
   //
-  // The branch can now emit at most one membership row for each assignment_id,
-  // so intersecting by assignment_id is equivalent to intersecting row sets for
-  // EXISTS purposes.
+  // The branch can now emit at most one issue_label row for each issue_id, so
+  // intersecting by issue_id is equivalent to asking whether both EXISTS
+  // branches are true.
   const constrained = new Set(condition.related.correlation.childField);
   collectEqualityConstrainedColumns(
     condition.related.subquery.where,
