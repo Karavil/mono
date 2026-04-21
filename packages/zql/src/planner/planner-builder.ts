@@ -334,6 +334,9 @@ function applyToCondition(
       planIdSymbol
     ];
     const shouldFlip = planId !== undefined && flippedIds.has(planId);
+    // Preserve explicit flip: false while avoiding a noisy flip: false on every
+    // ordinary planner-controlled EXISTS. The absence of flip means "planner may
+    // choose"; an explicit false means "do not flip this relationship".
     const flip =
       shouldFlip || condition.flip !== undefined
         ? {flip: shouldFlip}

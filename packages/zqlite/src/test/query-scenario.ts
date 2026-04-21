@@ -96,6 +96,10 @@ export function runQueryScenario<S extends Schema>(
 
   const input = buildPipeline(optimizedAST, delegate, 'query-scenario');
   const sink = new Catch(input);
+  // SQL shape alone can be misleading because ScenarioDebug dedupes query text:
+  // the two student membership scans in an intersection scenario have the same
+  // SQL and different bind values. Row expectations prove the optimized
+  // physical shape still returns the intended result set.
   const rows = sink
     .fetch()
     .filter(node => node !== 'yield')

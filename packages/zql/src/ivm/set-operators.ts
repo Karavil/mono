@@ -23,6 +23,32 @@ import type {SourceSchema} from './schema.ts';
 import {type Stream} from './stream.ts';
 import {mergeFetches} from './union-fan-in.ts';
 
+/**
+ * Physical OR over multiple independently optimized root pipelines.
+ *
+ * Conceptually:
+ *
+ *   branch 0: parent WHERE teacher_id = 1
+ *   branch 1: child WHERE student_id = 'student-1' -> parent
+ *
+ *                    InputUnion
+ *                  /            \
+ *          parent rows        parent rows
+ *
+ * Fetch is a sorted merge by the output schema comparator. Duplicate primary
+ * keys are represented by the first branch in input order. Push has to preserve
+ * that same "earliest branch owns the row" rule, including handoffs:
+ *
+ *   later owns row {id: 1, value: 20}
+ *   earlier adds   {id: 1, value: 10}
+ *
+ * The visible result did not gain a new primary key. Its representative row
+ * changed, so downstream receives EDIT(value 20 -> 10).
+ *
+ * This operator deliberately does not try to merge relationship payloads from
+ * duplicate rows. The builder only uses it for root queries without related
+ * rows, start, or limit.
+ */
 export class InputUnion implements Input {
   readonly #inputs: readonly Input[];
   readonly #inputIndexes: ReadonlyMap<InputBase, number>;
@@ -111,6 +137,11 @@ export class InputUnion implements Input {
     pusher: InputBase,
     pusherIndex: number,
   ): Generator<'yield'> {
+    // ADD has three cases:
+    //
+    //   no other branch has pk       => new visible row, emit ADD
+    //   later branch has pk          => representative handoff, emit EDIT
+    //   earlier branch has pk        => still represented earlier, emit nothing
     const match = yield* this.#firstMatchingInputExcept(pusher, node);
     if (!match) {
       yield* this.#output.push(makeAddChange(node), this);
@@ -126,6 +157,11 @@ export class InputUnion implements Input {
     pusher: InputBase,
     pusherIndex: number,
   ): Generator<'yield'> {
+    // REMOVE mirrors ADD:
+    //
+    //   no other branch has pk       => row disappeared, emit REMOVE
+    //   later branch has pk          => representative handoff, emit EDIT
+    //   earlier branch has pk        => still represented earlier, emit nothing
     const match = yield* this.#firstMatchingInputExcept(pusher, node);
     if (!match) {
       yield* this.#output.push(makeRemoveChange(node), this);
@@ -143,6 +179,8 @@ export class InputUnion implements Input {
     'yield',
     {readonly index: number; readonly node: Node} | undefined
   > {
+    // Search in input order because fetch uses input order as the tie-break for
+    // duplicate primary keys. Push must discover the same representative row.
     const constraint = keyConstraint(node.row, this.#schema.primaryKey);
     for (const [index, input] of this.#inputs.entries()) {
       if (input === pusher) {
@@ -170,6 +208,26 @@ export class InputUnion implements Input {
   }
 }
 
+/**
+ * Physical AND over same-relationship EXISTS branches.
+ *
+ * Conceptually:
+ *
+ *   child WHERE student_id = 'student-1'  -> keys {101, 102}
+ *   child WHERE student_id = 'student-2'  -> keys {102, 1500}
+ *
+ *             InputIntersection on assignment_id
+ *                         |
+ *                    key {102}
+ *
+ * The output row is a representative child row from the first input for each
+ * intersected key. The following FlippedJoin uses that key to fetch the parent.
+ *
+ * The builder only creates this operator when every child branch is unique for
+ * the correlation key. That keeps "one representative per key" equivalent to
+ * EXISTS semantics. If a future caller wants arbitrary many rows per key, this
+ * operator would need row-bag semantics instead of key-set semantics.
+ */
 export class InputIntersection implements Input {
   readonly #inputs: readonly Input[];
   readonly #key: CompoundKey;
@@ -195,6 +253,10 @@ export class InputIntersection implements Input {
   }
 
   *fetch(req: FetchRequest): Stream<Node | 'yield'> {
+    // Fetch rest branch key sets first, then stream first-branch
+    // representatives in first-branch order. yieldedKeys is the key-set part of
+    // the contract: even if the first branch has duplicate rows for a key, the
+    // intersection emits one representative key for the parent lookup.
     const [first, ...rest] = this.#inputs;
     const firstNodes: Node[] = [];
     for (const node of first.fetch(req)) {
@@ -280,6 +342,9 @@ export class InputIntersection implements Input {
   }
 
   *#pushAdd(node: Node, pusher: Input): Generator<'yield'> {
+    // A key enters the intersection only when every other branch has that key.
+    // Non-first branches emit the first input's representative, because fetch
+    // always represents an intersected key with a first-input row.
     if (!(yield* this.#allOtherInputsHaveMatch(pusher, node))) {
       return;
     }
@@ -297,6 +362,11 @@ export class InputIntersection implements Input {
   }
 
   *#pushRemove(node: Node, pusher: Input): Generator<'yield'> {
+    // A key leaves the intersection when this branch no longer has it and all
+    // other branches still do. For the first branch, removing the current
+    // representative is visible even if another first-branch row with the same
+    // key remains, because fetch would have emitted the removed representative
+    // before the change.
     const constraint = keyConstraint(node.row, this.#key);
     if (
       pusher !== this.#inputs[0] &&
@@ -324,6 +394,8 @@ export class InputIntersection implements Input {
     pusher: InputBase,
     node: Node,
   ): Generator<'yield', boolean> {
+    // This tests key presence, not row equality. EXISTS only cares whether each
+    // branch can produce at least one child row for the parent correlation key.
     const constraint = keyConstraint(node.row, this.#key);
     for (const input of this.#inputs) {
       if (input === pusher) {
@@ -341,6 +413,10 @@ function mergeInputSchemas(
   operatorName: string,
   inputs: readonly Input[],
 ): SourceSchema {
+  // The set operators sit between complete pipelines. They can only compose
+  // pipelines that expose the same row stream shape. Relationships are merged
+  // by name for the schema contract, but duplicate row relationship payloads
+  // are not merged by InputUnion. The builder avoids that case for root union.
   const schema = {
     ...firstInputSchema(operatorName, inputs),
     relationships: {

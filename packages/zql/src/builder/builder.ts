@@ -271,6 +271,37 @@ function buildPipelineInternal(
     assertNoNotExists(ast.where);
   }
 
+  // Two narrow physical rewrites run before the generic source/filter/join
+  // pipeline below. They are not boolean normalizations. They replace a broad
+  // parent scan with a plan that starts from selective roots once the planner
+  // has marked at least one EXISTS as flipped.
+  //
+  // OR shape:
+  //
+  //   parent WHERE A OR EXISTS(child WHERE B)
+  //
+  // becomes:
+  //
+  //   parent WHERE A        child WHERE B
+  //          \              /
+  //           \            /
+  //              InputUnion
+  //
+  // AND shape:
+  //
+  //   parent WHERE EXISTS(child WHERE B) AND EXISTS(child WHERE C)
+  //
+  // becomes:
+  //
+  //   child WHERE B   child WHERE C
+  //        \             /
+  //       InputIntersection on child correlation key
+  //                 |
+  //          FlippedJoin to parent
+  //
+  // The guards on each rewrite are intentionally strict. If a query needs
+  // limits, related rows, non unique child matches, or nested subquery
+  // semantics, it falls through to the older pipeline.
   const rootUnionBranches = getRootUnionBranches(ast);
   if (rootUnionBranches) {
     return applyRootUnionBranches(
@@ -398,6 +429,19 @@ function applyRootUnionBranches(
   name: string,
   partitionKey?: CompoundKey,
 ): Input {
+  // Run every OR branch as its own root query, then merge by primary key.
+  // This is the physical equivalent of SQLite's multi-index OR strategy:
+  //
+  //   OR
+  //     teacher_id = 1
+  //     EXISTS(membership student_id = 'student-1')
+  //
+  //   parent root: teacher_id = 1
+  //   child root:  membership student_id = 'student-1' -> parent lookup
+  //   union:       sorted primary-key dedupe
+  //
+  // Each recursive branch keeps the same ordering and split-edit keys as the
+  // original AST, so the union can merge streams without re-sorting.
   const inputs = branches.map((branch, index) =>
     buildPipelineInternal(
       {
@@ -419,6 +463,9 @@ function applyRootUnionBranches(
 }
 
 function getRootUnionBranches(ast: AST): readonly Condition[] | undefined {
+  // This rewrite is only safe at the root of a plain query. start, limit, and
+  // related rows all observe the whole result stream, so they need a richer
+  // physical plan than "run branch pipelines, then union".
   if (
     ast.where?.type !== 'or' ||
     ast.where.conditions.length < 2 ||
@@ -430,14 +477,22 @@ function getRootUnionBranches(ast: AST): readonly Condition[] | undefined {
   }
 
   const branches = ast.where.conditions;
+
+  // At least one branch must already be source driven by a flipped EXISTS.
+  // Otherwise a root union would just split a query that the existing source
+  // or filter pipeline can already handle.
   if (!branches.some(conditionIncludesFlippedSubqueryAtAnyLevel)) {
     return undefined;
   }
 
+  // There must also be at least one local parent branch. If every branch is a
+  // child branch, the existing UnionFanOut and UnionFanIn path handles it.
   if (!branches.some(isNotAndDoesNotContainSubquery)) {
     return undefined;
   }
 
+  // The normalizer flattens ORs before planning. If a nested OR survives here,
+  // keep the old path rather than inventing branch semantics locally.
   if (branches.some(branch => branch.type === 'or')) {
     return undefined;
   }
@@ -451,6 +506,18 @@ function applySameRelationshipExistsIntersection(
   end: Input,
   name: string,
 ): Input {
+  // Build the child side before the parent lookup:
+  //
+  //   assignment_to_student WHERE student_id = 'student-1'
+  //                 intersect by assignment_id
+  //   assignment_to_student WHERE student_id = 'student-2'
+  //                 |
+  //          assignment WHERE id = assignment_id
+  //
+  // The resulting InputIntersection emits child rows whose correlation key is
+  // present in every sibling EXISTS branch. FlippedJoin then performs the
+  // reduced parent lookup. This avoids loading a parent row after the first
+  // child scan only to probe the second child relationship row-by-row.
   const {conditions, related} = intersection;
   const childInputs = conditions.map((condition, index) =>
     buildPipelineInternal(
@@ -498,6 +565,15 @@ function getSameRelationshipExistsIntersection(
   condition: Condition | undefined,
   delegate: BuilderDelegate,
 ): SameRelationshipExistsIntersection | undefined {
+  // Detect a narrow, physical intersection opportunity:
+  //
+  //   AND
+  //     EXISTS(relationship R, child predicate A)
+  //     EXISTS(relationship R, child predicate B)
+  //
+  // We only need one sibling to be planned as flipped. Once one branch is
+  // source-driven, intersecting all compatible siblings lets the runtime start
+  // with the child table and avoid parent-first probing.
   if (condition?.type !== 'and') {
     return undefined;
   }
@@ -511,6 +587,10 @@ function getSameRelationshipExistsIntersection(
   if (candidates.length < 2) {
     return undefined;
   }
+
+  // Respect explicit user intent. flip: false means "keep this semi-join".
+  // Undefined still means the planner may decide, so it can join a group where
+  // another sibling was chosen as flipped.
   if (!candidates.some(candidate => candidate.flip === true)) {
     return undefined;
   }
@@ -528,6 +608,10 @@ function getSameRelationshipExistsIntersection(
     return undefined;
   }
 
+  // InputIntersection is a key-set operator. It emits one representative row
+  // per child correlation key, so each branch must be unique for that key.
+  // If a branch could return two child rows for the same parent, intersecting
+  // keys would no longer match the row-level EXISTS stream semantics.
   if (
     candidates.some(
       candidate =>
@@ -549,6 +633,9 @@ function getSameRelationshipExistsIntersection(
 function getIntersectableExists(
   condition: Condition,
 ): CorrelatedSubqueryCondition | undefined {
+  // Only plain EXISTS branches participate. Nested subqueries, start, and
+  // limit can all make "does this key exist?" depend on more than the child
+  // predicate's key domain.
   if (condition.type !== 'correlatedSubquery') {
     return undefined;
   }
@@ -582,6 +669,9 @@ function sameRelationshipExistsKey(
   }
 
   const {related} = exists;
+  // Include orderBy because SourceSchema.sort must match across every child
+  // input in the intersection. EXISTS does not care about child ordering
+  // semantically, but the runtime stream contract does.
   return JSON.stringify({
     system: related.system,
     hidden: related.hidden,
@@ -598,6 +688,19 @@ function isUniquePerCorrelationKey(
   condition: CorrelatedSubqueryCondition,
   childPrimaryKey: readonly string[],
 ): boolean {
+  // Prove:
+  //
+  //   correlation child fields + literal equality filters cover child PK
+  //
+  // Example:
+  //
+  //   child PK:          [assignment_id, student_id]
+  //   correlation key:   [assignment_id]
+  //   child predicate:   student_id = 'student-1'
+  //
+  // The branch can now emit at most one membership row for each assignment_id,
+  // so intersecting by assignment_id is equivalent to intersecting row sets for
+  // EXISTS purposes.
   const constrained = new Set(condition.related.correlation.childField);
   collectEqualityConstrainedColumns(
     condition.related.subquery.where,
@@ -610,6 +713,9 @@ function collectEqualityConstrainedColumns(
   condition: Condition | undefined,
   constrained: Set<string>,
 ): void {
+  // This is intentionally conservative. Only literal equality predicates prove
+  // uniqueness. IN, OR, scalar subqueries, and nested EXISTS can still be
+  // optimized later, but they need a richer proof than this small helper.
   if (!condition) {
     return;
   }
