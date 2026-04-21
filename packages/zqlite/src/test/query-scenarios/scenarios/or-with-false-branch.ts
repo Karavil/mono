@@ -38,13 +38,18 @@ export default {
         right: {type: 'literal', value: 1},
       },
     },
-    // Before -> after:
-    //
-    //   teacher_id = 1 OR FALSE
+    // Query:
     //
     //   teacher_id = 1
+    //        OR
+    //   FALSE
     //
-    // A false branch adds no rows to an OR.
+    // Rewrite:
+    //
+    //   FALSE adds no rows
+    //          |
+    //          v
+    //   teacher_id = 1
     sql: [
       {
         table: 'assignment',

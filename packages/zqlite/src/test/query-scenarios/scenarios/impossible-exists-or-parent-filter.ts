@@ -51,13 +51,18 @@ export default {
         right: {type: 'literal', value: 1},
       },
     },
-    // Before -> after:
-    //
-    //   teacher_id = 1 OR EXISTS membership(student IN [])
+    // Query:
     //
     //   teacher_id = 1
+    //        OR
+    //   EXISTS membership(student IN [])
     //
-    // The impossible EXISTS branch is false, so OR keeps only the real branch.
+    // Rewrite:
+    //
+    //   teacher_id = 1 OR FALSE
+    //                 |
+    //                 v
+    //          teacher_id = 1
     sql: [
       {
         table: 'assignment',

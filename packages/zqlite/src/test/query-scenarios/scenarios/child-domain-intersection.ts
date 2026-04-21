@@ -71,14 +71,21 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    // Before -> after:
+    // Query:
     //
     //   assignment
-    //     EXISTS membership(student IN (1, 2) AND student != 2)
+    //     `-- EXISTS membership(student IN [1, 2] AND student != 2)
+    //
+    // Rewrite:
+    //
+    //   student IN [1, 2] AND student != 2
+    //                     |
+    //                     v
+    //                student = 1
+    //
+    // Scan plan:
     //
     //   membership(student = 1) -> assignment(id)
-    //
-    // Simplify the child domain first, then flip the selective EXISTS.
     sql: [
       {
         table: 'assignment_to_student',

@@ -94,14 +94,19 @@ export default {
         ],
       },
     },
-    // Before -> after:
+    // Query:
     //
-    //   (archived AND EXISTS membership(student = 1))
-    //     OR (archived AND EXISTS membership(student = 2))
+    //   archived AND EXISTS membership(student = 1)
+    //        OR
+    //   archived AND EXISTS membership(student = 2)
     //
-    //   membership(student IN (1, 2)) -> assignment(id, archived)
+    // Rewrite:
     //
-    // Factor the shared parent filter, merge the child domains, then flip.
+    //   archived AND EXISTS membership(student IN [1, 2])
+    //
+    // Scan plan:
+    //
+    //   membership(student IN [1, 2]) -> assignment(id, archived)
     sql: [
       {
         table: 'assignment_to_student',

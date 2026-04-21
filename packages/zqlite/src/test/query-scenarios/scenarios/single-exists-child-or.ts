@@ -58,14 +58,18 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    // Before -> after:
+    // Query:
     //
     //   assignment
-    //     EXISTS membership(student = 1 OR student = 2)
+    //     `-- EXISTS membership(student = 1 OR student = 2)
     //
-    //   membership(student IN (1, 2)) -> assignment(id)
+    // Rewrite:
     //
-    // Merge the child OR before choosing the flipped root.
+    //   child OR -> student IN [1, 2]
+    //
+    // Scan plan:
+    //
+    //   membership(student IN [1, 2]) -> assignment(id)
     sql: [
       {
         table: 'assignment_to_student',

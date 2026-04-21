@@ -40,13 +40,18 @@ export default {
         conditions: [],
       },
     },
-    // Before -> after:
+    // Query:
     //
-    //   teacher_id = 1 AND teacher_id != 1
+    //   teacher_id = 1
+    //        AND
+    //   teacher_id != 1
     //
-    //   FALSE
+    // Rewrite:
     //
-    // The parent domain is empty, so no assignment can survive.
+    //   [teacher 1] intersect [not teacher 1]
+    //                 |
+    //                 v
+    //              FALSE
     sql: [
       {
         table: 'assignment',

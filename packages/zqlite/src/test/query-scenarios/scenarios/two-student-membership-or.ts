@@ -78,13 +78,19 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    // Before -> after:
+    // Query:
     //
-    //   EXISTS membership(student = 1) OR EXISTS membership(student = 2)
+    //   EXISTS membership(student = 1)
+    //        OR
+    //   EXISTS membership(student = 2)
     //
-    //   membership(student IN (1, 2)) -> assignment(id)
+    // Rewrite:
     //
-    // Same relationship, same correlation, one merged child domain.
+    //   same relationship OR -> student IN [1, 2]
+    //
+    // Scan plan:
+    //
+    //   membership(student IN [1, 2]) -> assignment(id)
     sql: [
       {
         table: 'assignment_to_student',

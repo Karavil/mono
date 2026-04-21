@@ -67,13 +67,19 @@ export default {
         flip: true,
       },
     },
-    // Before -> after:
+    // Query:
     //
-    //   EXISTS membership(student = 1) OR EXISTS membership(student = 2)
+    //   EXISTS membership(student = 1)
+    //        OR
+    //   EXISTS membership(student = 2)
     //
-    //   membership(student IN (1, 2)) -> assignment(id)
+    // Rewrite:
     //
-    // Sibling EXISTS branches over the same edge become one flipped scan.
+    //   same relationship OR -> student IN [1, 2]
+    //
+    // Scan plan:
+    //
+    //   membership(student IN [1, 2]) -> assignment(id)
     sql: [
       {
         table: 'assignment_to_student',

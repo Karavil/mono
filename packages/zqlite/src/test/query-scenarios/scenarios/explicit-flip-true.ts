@@ -60,14 +60,16 @@ export default {
         ],
       },
     },
-    // Before -> after:
+    // Query:
     //
     //   assignment(archived)
-    //     EXISTS membership(student) with flip true
+    //     `-- EXISTS membership(student), flip = true
+    //
+    // Scan plan:
     //
     //   membership(student) -> assignment(id, archived)
     //
-    // Explicit flip true makes membership the root.
+    // The user pinned the root at membership, so we start there.
     sql: [
       {
         table: 'assignment_to_student',

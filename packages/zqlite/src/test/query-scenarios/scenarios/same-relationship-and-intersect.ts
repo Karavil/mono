@@ -62,17 +62,19 @@ export default {
       .orderBy(colName(assignment, 'created_at'), 'desc')
       .orderBy(colName(assignment, 'id'), 'asc'),
   expectations: {
-    // Before -> after:
+    // Query:
     //
-    //   EXISTS membership(student = 1)
-    //     AND EXISTS membership(student = 2)
+    //   assignment
+    //     |-- EXISTS membership(student = 1)
+    //     `-- EXISTS membership(student = 2)
     //
-    //   membership(student = 1)
-    //       INTERSECT on assignment_id
-    //   membership(student = 2)
-    //       -> assignment(id)
+    // Scan plan:
     //
-    // AND means the assignment key must survive both child streams.
+    //   membership(student = 1) -> assignment ids --.
+    //                                                +-- intersect assignment_id -> assignment(id)
+    //   membership(student = 2) -> assignment ids ---'
+    //
+    // The assignment id must survive both child streams.
     // The membership SQL has calls: 2 because the same SELECT text runs once
     // for each student bind value before the assignment_id intersection.
     sql: [

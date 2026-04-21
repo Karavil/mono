@@ -60,14 +60,16 @@ export default {
         ],
       },
     },
-    // Before -> after:
+    // Query:
     //
     //   assignment(archived)
-    //     EXISTS membership(student) with flip false
+    //     `-- EXISTS membership(student), flip = false
+    //
+    // Scan plan:
     //
     //   assignment(archived) -> membership(assignment_id, student)
     //
-    // Explicit flip false is user intent, so assignment remains the root.
+    // The user pinned the root at assignment, so we do not flip.
     // calls: 26 includes the repeated per-assignment membership probes plus
     // the final probe used while exhausting the parent stream.
     sql: [

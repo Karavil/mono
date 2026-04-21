@@ -26,19 +26,17 @@ import {mergeFetches} from './union-fan-in.ts';
 /**
  * Merges the results of an OR query that has more than one good starting point.
  *
- * Example user query:
+ * Query:
  *
- *   issues where status = 'open'
- *     OR issue has label 'bug'
+ *   issue
+ *     |-- status = 'open'
+ *     `-- OR has issue_label(label = 'bug')
  *
- * Optimized scan:
+ * Scan plan:
  *
- *   branch 0: scan issue(status = 'open')
- *   branch 1: scan issue_label(label = 'bug') -> look up issue
- *
- *                         InputUnion
- *                       /            \
- *               issue rows        issue rows
+ *   branch 0: issue(status = 'open') ----------------.
+ *                                                   InputUnion -> issue rows
+ *   branch 1: issue_label(label = 'bug') -> issue(id) -'
  *
  * InputUnion streams those issue rows in final sort order and removes duplicate
  * issue ids. If the same issue appears in both branches, the earlier branch is
@@ -228,21 +226,20 @@ export class InputUnion implements Input {
 /**
  * Keeps only parent ids that appear in every required related-table scan.
  *
- * Example user query:
+ * Query:
  *
- *   issues where issue has label 'bug'
- *     AND issue has label 'urgent'
+ *   issue
+ *     |-- has issue_label(label = 'bug')
+ *     `-- AND has issue_label(label = 'urgent')
  *
- * Optimized scan:
+ * Scan plan:
  *
- *   issue_label(label = 'bug')    -> issue ids {10, 20}
- *   issue_label(label = 'urgent') -> issue ids {20, 30}
- *
- *             InputIntersection on issue_id
- *                         |
- *                    issue id {20}
- *                         |
- *                   look up issue 20
+ *   issue_label(label = 'bug')    -> ids {10, 20} --.
+ *                                                     InputIntersection -> id {20}
+ *   issue_label(label = 'urgent') -> ids {20, 30} ----'
+ *                                                            |
+ *                                                            v
+ *                                                        issue(id = 20)
  *
  * The important idea is simple: do the cheap child-table lookups first, keep
  * only ids found in every branch, then fetch the parent rows. The builder only

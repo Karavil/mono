@@ -78,17 +78,20 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    // Before -> after:
+    // Query:
     //
     //   assignment
-    //     archived AND (teacher OR FALSE OR EXISTS membership(student))
+    //     `-- archived AND (teacher OR FALSE OR EXISTS membership(student))
     //
-    //   assignment(archived), with teacher checked above the SQL scan
-    //     for the parent branch
-    //       UNION on assignment.id
-    //   membership(student) -> assignment(id, archived)
+    // Rewrite:
     //
-    // Drop FALSE, then plan the remaining mixed OR as two roots.
+    //   remove FALSE from the OR
+    //
+    // Scan plan:
+    //
+    //   assignment(archived), teacher checked in pipeline --.
+    //                                                       +-- union assignment.id
+    //   membership(student) -> assignment(id, archived) ----'
     sql: [
       {
         table: 'assignment',

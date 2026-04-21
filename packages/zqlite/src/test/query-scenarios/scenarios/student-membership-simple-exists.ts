@@ -60,14 +60,14 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    // Before -> after:
+    // Query:
     //
     //   assignment(archived)
-    //     EXISTS membership(student)
+    //     `-- EXISTS membership(student)
+    //
+    // Scan plan:
     //
     //   membership(student) -> assignment(id, archived)
-    //
-    // The child predicate is selective, so membership becomes the root.
     sql: [
       {
         table: 'assignment_to_student',

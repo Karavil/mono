@@ -61,14 +61,16 @@ export default {
       },
     },
     planDebug: ['semi'],
-    // Before -> after:
+    // Query:
     //
     //   assignment(archived, teacher)
-    //     EXISTS membership(student)
+    //     `-- EXISTS membership(student)
+    //
+    // Scan plan:
     //
     //   assignment(archived, teacher) -> membership(assignment_id, student)
     //
-    // The parent predicates are selective, so the semi join stays unflipped.
+    // The assignment filters are selective, so assignment stays the root.
     sql: [
       {
         table: 'assignment',

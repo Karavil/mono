@@ -42,13 +42,15 @@ export default {
         right: {type: 'literal', value: [1, 2]},
       },
     },
-    // Before -> after:
+    // Query:
     //
-    //   teacher_id = 1 OR teacher_id = 2
+    //   teacher_id = 1
+    //        OR
+    //   teacher_id = 2
     //
-    //   teacher_id IN (1, 2)
+    // Rewrite:
     //
-    // Same-column equality ORs collapse into one finite domain.
+    //   teacher_id IN [1, 2]
     sql: [
       {
         table: 'assignment',

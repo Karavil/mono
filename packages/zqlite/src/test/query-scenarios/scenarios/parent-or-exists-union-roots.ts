@@ -68,16 +68,16 @@ export default {
       },
     },
     planDebug: ['FO ⋈ assignment_to_student: flipped'],
-    // Before -> after:
+    // Query:
     //
     //   assignment
-    //     teacher OR EXISTS membership(student)
+    //     `-- teacher OR EXISTS membership(student)
     //
-    //   assignment(teacher)
-    //       UNION on assignment.id
-    //   membership(student) -> assignment(id)
+    // Scan plan:
     //
-    // Mixed OR branches each keep the most selective root.
+    //   assignment(teacher) -----------------------.
+    //                                               +-- union assignment.id
+    //   membership(student) -> assignment(id) ------'
     sql: [
       {
         table: 'assignment',

@@ -67,13 +67,19 @@ export default {
         flip: true,
       },
     },
-    // Before -> after:
+    // Query:
     //
-    //   EXISTS membership(student = 1) OR EXISTS membership(student = 1)
+    //   EXISTS membership(student = 1)
+    //        OR
+    //   EXISTS membership(student = 1)
+    //
+    // Rewrite:
+    //
+    //   identical branches collapse to one
+    //
+    // Scan plan:
     //
     //   membership(student = 1) -> assignment(id)
-    //
-    // Duplicate OR branches collapse before the surviving EXISTS flips.
     sql: [
       {
         table: 'assignment_to_student',

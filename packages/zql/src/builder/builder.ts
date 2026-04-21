@@ -277,34 +277,39 @@ function buildPipelineInternal(
   //
   // OR example:
   //
-  //   User query:
-  //     issues where status = 'open'
-  //       OR issue has label 'bug'
+  //   Query:
   //
-  //   Optimized scan:
-  //     scan issue(status = 'open')
-  //       UNION by issue.id
-  //     scan issue_label(label = 'bug') -> look up issue
+  //     issue
+  //       |-- status = 'open'
+  //       `-- OR has issue_label(label = 'bug')
+  //
+  //   Scan plan:
+  //
+  //     issue(status = 'open') -----------------------.
+  //                                                     +-- union issue.id
+  //     issue_label(label = 'bug') -> issue(id) -------'
   //
   // The broad plan would scan all issues and ask "does either branch match?"
-  // for every row. The optimized plan starts from both selective doorways into
-  // issue rows, then dedupes by issue.id.
+  // for every row. This plan starts from both selective doorways into issue
+  // rows, then dedupes by issue.id.
   //
   // AND example:
   //
-  //   User query:
-  //     issues where issue has label 'bug'
-  //       AND issue has label 'urgent'
+  //   Query:
   //
-  //   Optimized scan:
-  //     scan issue_label(label = 'bug')    -> issue ids
-  //       INTERSECT issue ids
-  //     scan issue_label(label = 'urgent') -> issue ids
-  //       -> look up issue
+  //     issue
+  //       |-- has issue_label(label = 'bug')
+  //       `-- AND has issue_label(label = 'urgent')
+  //
+  //   Scan plan:
+  //
+  //     issue_label(label = 'bug')    -> ids {10, 20} --.
+  //                                                        +-- ids in both -> issue(id)
+  //     issue_label(label = 'urgent') -> ids {20, 30} ----'
   //
   // The broad plan would load issues after the first label match, then probe
-  // the second label row-by-row. The optimized plan first finds the issue ids
-  // that appear in both child scans, then loads only those issues.
+  // the second label row-by-row. This plan first finds the issue ids that
+  // appear in both child scans, then loads only those issues.
   //
   // Each rewrite has its own strict guard below. If a query needs a shape the
   // new physical operator cannot preserve, it falls through to the older
@@ -440,14 +445,16 @@ function applyRootUnionBranches(
   // root is just the table/index we choose to scan first. This is the physical
   // equivalent of SQLite's multi-index OR strategy:
   //
-  //   User query:
+  //   Query:
+  //
   //     issue.status = 'open'
   //       OR EXISTS(issue_label WHERE label = 'bug')
   //
-  //   Optimized scan:
-  //     issue WHERE status = 'open'
-  //       UNION by issue.id
-  //     issue_label WHERE label = 'bug' -> issue lookup
+  //   Scan plan:
+  //
+  //     issue(status = 'open') -----------------------.
+  //                                                     +-- union issue.id
+  //     issue_label(label = 'bug') -> issue(id) -------'
   //
   // Each recursive branch keeps the same ordering and split-edit keys as the
   // original AST, so the union can merge streams without re-sorting.
@@ -519,15 +526,17 @@ function applySameRelationshipExistsIntersection(
   // find the issue ids that satisfy every sibling EXISTS first, then load the
   // issue rows for only those ids.
   //
-  //   User query:
-  //     EXISTS(issue_label WHERE label = 'bug')
-  //       AND EXISTS(issue_label WHERE label = 'urgent')
+  //   Query:
   //
-  //   Optimized scan:
-  //     issue_label WHERE label = 'bug'
-  //       INTERSECT by issue_id
-  //     issue_label WHERE label = 'urgent'
-  //       -> issue WHERE id = issue_id
+  //     issue
+  //       |-- EXISTS(issue_label WHERE label = 'bug')
+  //       `-- EXISTS(issue_label WHERE label = 'urgent')
+  //
+  //   Scan plan:
+  //
+  //     issue_label(label = 'bug') -------------------.
+  //                                                     +-- intersect issue_id -> issue(id)
+  //     issue_label(label = 'urgent') ----------------'
   //
   // This avoids loading an issue after the first label match only to probe the
   // second label relationship row-by-row.
@@ -628,13 +637,17 @@ function getSameRelationshipExistsIntersection(
   // child row for each parent id, each branch must prove it can produce at
   // most one child row for the id it contributes.
   //
-  //   child table:     issue_label
-  //   child PK:        [issue_id, label]
-  //   parent id field: issue_id
-  //   child filter:    label = 'bug'
+  //   issue_label primary key:
   //
-  // issue_id plus label covers the child PK, so this branch can produce at
-  // most one issue_label row for each issue_id.
+  //     [issue_id, label]
+  //
+  //   Branch filter:
+  //
+  //     issue_id comes from the parent relationship
+  //     label = 'bug'
+  //
+  // Together those two values cover the full primary key, so this branch can
+  // produce at most one issue_label row for each issue_id.
   if (
     candidates.some(
       candidate =>
@@ -740,14 +753,18 @@ function isUniquePerCorrelationKey(
   //
   // Example:
   //
-  //   child table:    issue_label
-  //   child PK:       [issue_id, label]
-  //   parent id field: issue_id
-  //   child filter:   label = 'bug'
+  //   issue_label primary key:
   //
-  // The branch can now emit at most one issue_label row for each issue_id, so
-  // intersecting by issue_id is equivalent to asking whether both EXISTS
-  // branches are true.
+  //     [issue_id, label]
+  //
+  //   Branch filter:
+  //
+  //     issue_id comes from the parent relationship
+  //     label = 'bug'
+  //
+  // Together those values identify one issue_label row. That makes
+  // intersecting by issue_id equivalent to asking whether both EXISTS branches
+  // are true.
   const constrained = new Set(condition.related.correlation.childField);
   collectEqualityConstrainedColumns(
     condition.related.subquery.where,
