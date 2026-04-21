@@ -1,10 +1,13 @@
+import fc from 'fast-check';
 import {expect, test} from 'vitest';
 import type {
   AST,
   Condition,
   CorrelatedSubqueryCondition,
   LiteralValue,
+  SimpleOperator,
 } from '../../../zero-protocol/src/ast.ts';
+import {createPredicate, type NoSubqueryCondition} from '../builder/filter.ts';
 import {normalizePlannerAST} from './condition-normalizer.ts';
 
 const TRUE: Condition = {type: 'and', conditions: []};
@@ -64,6 +67,65 @@ test('normalizes degenerate IN predicates', () => {
   });
 });
 
+test('intersects same-column AND equalities and IN predicates', () => {
+  expect(
+    normalizeWhere({
+      type: 'and',
+      conditions: [
+        inCondition('status', 'IN', ['active', 'pending']),
+        eq('status', 'pending'),
+      ],
+    }),
+  ).toEqual(eq('status', 'pending'));
+
+  expect(
+    normalizeWhere({
+      type: 'and',
+      conditions: [
+        inCondition('status', 'IN', ['active', 'pending']),
+        inCondition('status', 'IN', ['pending', 'draft']),
+      ],
+    }),
+  ).toEqual(eq('status', 'pending'));
+
+  expect(
+    normalizeWhere({
+      type: 'and',
+      conditions: [eq('status', 'active'), eq('status', 'pending')],
+    }),
+  ).toEqual(FALSE);
+});
+
+test('applies same-column AND exclusions', () => {
+  expect(
+    normalizeWhere({
+      type: 'and',
+      conditions: [eq('status', 'active'), ne('status', 'active')],
+    }),
+  ).toEqual(FALSE);
+
+  expect(
+    normalizeWhere({
+      type: 'and',
+      conditions: [
+        inCondition('status', 'IN', ['active', 'pending', 'draft']),
+        ne('status', 'pending'),
+        inCondition('status', 'NOT IN', ['draft']),
+      ],
+    }),
+  ).toEqual(eq('status', 'active'));
+
+  expect(
+    normalizeWhere({
+      type: 'and',
+      conditions: [
+        inCondition('status', 'NOT IN', ['active']),
+        inCondition('status', 'NOT IN', ['pending']),
+      ],
+    }),
+  ).toEqual(inCondition('status', 'NOT IN', ['active', 'pending']));
+});
+
 test('merges OR exists branches over the same relationship', () => {
   expect(
     normalizeWhere({
@@ -78,6 +140,15 @@ test('merges OR exists branches over the same relationship', () => {
       right: {type: 'literal', value: ['hello', 'world']},
     }),
   );
+});
+
+test('preserves unrestricted exists when merging narrower exists branches', () => {
+  expect(
+    normalizeWhere({
+      type: 'or',
+      conditions: [exists(undefined), exists(eq('title', 'hello'))],
+    }),
+  ).toEqual(exists(undefined));
 });
 
 test('factors common parent filters before merging child exists branches', () => {
@@ -197,6 +268,38 @@ test('normalizes related subqueries recursively', () => {
   });
 });
 
+test('preserves simple filter semantics under generated rows', () => {
+  fc.assert(
+    fc.property(
+      filterConditionArbitrary(),
+      rowArbitrary(),
+      (condition, row) => {
+        const normalized = normalizePlannerAST({
+          table: 'users',
+          where: condition,
+        }).where as NoSubqueryCondition | undefined;
+        const before = createPredicate(condition)(row);
+        const after = normalized ? createPredicate(normalized)(row) : true;
+
+        expect(after).toBe(before);
+      },
+    ),
+    {numRuns: 1_000},
+  );
+});
+
+test('is idempotent for generated simple filters', () => {
+  fc.assert(
+    fc.property(filterConditionArbitrary(), condition => {
+      const once = normalizePlannerAST({table: 'users', where: condition});
+      const twice = normalizePlannerAST(once);
+
+      expect(twice).toEqual(once);
+    }),
+    {numRuns: 1_000},
+  );
+});
+
 function normalizeWhere(where: Condition): Condition | undefined {
   return normalizePlannerAST({table: 'users', where}).where;
 }
@@ -206,6 +309,15 @@ function eq(name: string, value: LiteralValue): Condition {
     type: 'simple',
     left: {type: 'column', name},
     op: '=',
+    right: {type: 'literal', value},
+  };
+}
+
+function ne(name: string, value: LiteralValue): Condition {
+  return {
+    type: 'simple',
+    left: {type: 'column', name},
+    op: '!=',
     right: {type: 'literal', value},
   };
 }
@@ -247,4 +359,91 @@ function exists(
       },
     },
   };
+}
+
+function filterConditionArbitrary(): fc.Arbitrary<NoSubqueryCondition> {
+  return fc.letrec(tie => ({
+    condition: fc.oneof(
+      simpleConditionArbitrary(),
+      fc.record({
+        type: fc.constant('and' as const),
+        conditions: fc.array(tie('condition'), {maxLength: 4}),
+      }),
+      fc.record({
+        type: fc.constant('or' as const),
+        conditions: fc.array(tie('condition'), {maxLength: 4}),
+      }),
+    ),
+  })).condition as fc.Arbitrary<NoSubqueryCondition>;
+}
+
+function simpleConditionArbitrary(): fc.Arbitrary<NoSubqueryCondition> {
+  return fc.oneof(
+    fc.record({
+      type: fc.constant('simple' as const),
+      left: columnReferenceArbitrary(),
+      op: fc.constantFrom<SimpleOperator>('=', '!=', '<', '<=', '>', '>='),
+      right: fc.record({
+        type: fc.constant('literal' as const),
+        value: scalarLiteralArbitrary(),
+      }),
+    }),
+    fc.record({
+      type: fc.constant('simple' as const),
+      left: columnReferenceArbitrary(),
+      op: fc.constantFrom<SimpleOperator>('IS', 'IS NOT'),
+      right: fc.record({
+        type: fc.constant('literal' as const),
+        value: fc.constant(null),
+      }),
+    }),
+    fc.record({
+      type: fc.constant('simple' as const),
+      left: columnReferenceArbitrary(),
+      op: fc.constantFrom<SimpleOperator>('IN', 'NOT IN'),
+      right: fc.record({
+        type: fc.constant('literal' as const),
+        value: fc.array(inLiteralArbitrary(), {maxLength: 6}),
+      }),
+    }),
+  );
+}
+
+function rowArbitrary() {
+  return fc.record({
+    a: rowValueArbitrary(),
+    b: rowValueArbitrary(),
+    c: rowValueArbitrary(),
+  });
+}
+
+function columnReferenceArbitrary() {
+  return fc.record({
+    type: fc.constant('column' as const),
+    name: fc.constantFrom('a', 'b', 'c'),
+  });
+}
+
+function scalarLiteralArbitrary(): fc.Arbitrary<
+  string | number | boolean | null
+> {
+  return fc.oneof(inLiteralArbitrary(), fc.constant(null));
+}
+
+function rowValueArbitrary(): fc.Arbitrary<
+  string | number | boolean | null | undefined
+> {
+  return fc.oneof(
+    inLiteralArbitrary(),
+    fc.constant(null),
+    fc.constant(undefined),
+  );
+}
+
+function inLiteralArbitrary(): fc.Arbitrary<string | number | boolean> {
+  return fc.oneof(
+    fc.string({maxLength: 8}),
+    fc.integer({min: -20, max: 20}),
+    fc.boolean(),
+  );
 }

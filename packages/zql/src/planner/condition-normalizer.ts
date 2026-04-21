@@ -109,13 +109,18 @@ function buildAnd(conditions: readonly Condition[]): Condition {
   const deduped = dedupe(
     flattened.filter(condition => !isAlwaysTrue(condition)),
   );
-  switch (deduped.length) {
+  const intersected = intersectEquivalentAndPredicates(deduped);
+  if (intersected.some(isAlwaysFalse)) {
+    return FALSE;
+  }
+
+  switch (intersected.length) {
     case 0:
       return TRUE;
     case 1:
-      return deduped[0];
+      return intersected[0];
     default:
-      return {type: 'and', conditions: deduped};
+      return {type: 'and', conditions: intersected};
   }
 }
 
@@ -165,6 +170,149 @@ type InMergeGroup = {
   readonly valueKeys: Set<string>;
   changed: boolean;
 };
+
+type DomainCandidate = {
+  readonly left: ValuePosition;
+  readonly include?: readonly InLiteralValue[] | undefined;
+  readonly exclude: readonly InLiteralValue[];
+  readonly isAlreadyCompound: boolean;
+};
+
+type DomainGroup = {
+  readonly left: ValuePosition;
+  readonly firstIndex: number;
+  include: InLiteralValue[] | undefined;
+  readonly exclude: InLiteralValue[];
+  readonly excludeKeys: Set<string>;
+  changed: boolean;
+};
+
+function intersectEquivalentAndPredicates(
+  conditions: readonly Condition[],
+): Condition[] {
+  const intersected: Array<Condition | undefined> = [...conditions];
+  const groups = new Map<string, DomainGroup>();
+
+  for (const [index, condition] of conditions.entries()) {
+    const candidate = getDomainCandidate(condition);
+    if (!candidate) {
+      continue;
+    }
+
+    const key = stableStringify(candidate.left);
+    const group = groups.get(key);
+    if (!group) {
+      const nextGroup: DomainGroup = {
+        left: candidate.left,
+        firstIndex: index,
+        include:
+          candidate.include === undefined
+            ? undefined
+            : dedupeInLiteralValues(candidate.include),
+        exclude: [],
+        excludeKeys: new Set<string>(),
+        changed: candidate.isAlreadyCompound,
+      };
+      groups.set(key, nextGroup);
+      addExcludedValues(nextGroup, candidate.exclude);
+      continue;
+    }
+
+    intersected[index] = undefined;
+    group.changed = true;
+    if (candidate.include !== undefined) {
+      group.include =
+        group.include === undefined
+          ? dedupeInLiteralValues(candidate.include)
+          : intersectInLiteralValues(group.include, candidate.include);
+    }
+    addExcludedValues(group, candidate.exclude);
+  }
+
+  for (const group of groups.values()) {
+    if (!group.changed) {
+      continue;
+    }
+    intersected[group.firstIndex] = buildDomainCondition(group);
+  }
+
+  return intersected.filter((condition): condition is Condition => !!condition);
+}
+
+function getDomainCandidate(condition: Condition): DomainCandidate | undefined {
+  if (condition.type !== 'simple' || condition.right.type !== 'literal') {
+    return undefined;
+  }
+
+  const {value} = condition.right;
+  switch (condition.op) {
+    case '=':
+      return isInLiteralValue(value)
+        ? {
+            left: condition.left,
+            include: [value],
+            exclude: [],
+            isAlreadyCompound: false,
+          }
+        : undefined;
+    case 'IN':
+      return Array.isArray(value) && value.every(isInLiteralValue)
+        ? {
+            left: condition.left,
+            include: value,
+            exclude: [],
+            isAlreadyCompound: true,
+          }
+        : undefined;
+    case '!=':
+      return isInLiteralValue(value)
+        ? {
+            left: condition.left,
+            exclude: [value],
+            isAlreadyCompound: false,
+          }
+        : undefined;
+    case 'NOT IN':
+      return Array.isArray(value) &&
+        value.length > 0 &&
+        value.every(isInLiteralValue)
+        ? {
+            left: condition.left,
+            exclude: value,
+            isAlreadyCompound: true,
+          }
+        : undefined;
+    default:
+      return undefined;
+  }
+}
+
+function addExcludedValues(
+  group: DomainGroup,
+  values: readonly InLiteralValue[],
+): void {
+  for (const value of values) {
+    const key = stableStringify(value);
+    if (group.excludeKeys.has(key)) {
+      group.changed = true;
+      continue;
+    }
+    group.excludeKeys.add(key);
+    group.exclude.push(value);
+  }
+}
+
+function buildDomainCondition(group: DomainGroup): Condition {
+  if (group.include !== undefined) {
+    return buildInCondition(
+      group.left,
+      group.include.filter(
+        value => !group.excludeKeys.has(stableStringify(value)),
+      ),
+    );
+  }
+  return buildNotInCondition(group.left, group.exclude);
+}
 
 function mergeEquivalentOrPredicates(
   conditions: readonly Condition[],
@@ -239,6 +387,30 @@ function buildInCondition(
   }
 }
 
+function buildNotInCondition(
+  left: ValuePosition,
+  values: readonly InLiteralValue[],
+): Condition {
+  switch (values.length) {
+    case 0:
+      return TRUE;
+    case 1:
+      return {
+        type: 'simple',
+        left,
+        op: '!=',
+        right: {type: 'literal', value: values[0]},
+      };
+    default:
+      return {
+        type: 'simple',
+        left,
+        op: 'NOT IN',
+        right: {type: 'literal', value: values},
+      };
+  }
+}
+
 function getInMergeCandidate(
   condition: Condition,
 ): InMergeCandidate | undefined {
@@ -293,6 +465,14 @@ function dedupeInLiteralValues(
     deduped.push(value);
   }
   return deduped;
+}
+
+function intersectInLiteralValues(
+  left: readonly InLiteralValue[],
+  right: readonly InLiteralValue[],
+): InLiteralValue[] {
+  const rightValues = new Set(right.map(stableStringify));
+  return left.filter(value => rightValues.has(stableStringify(value)));
 }
 
 function flatten(

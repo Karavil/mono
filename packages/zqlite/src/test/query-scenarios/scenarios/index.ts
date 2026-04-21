@@ -1,5 +1,7 @@
 import type {QueryScenario} from '../../query-scenario.ts';
 import type {educationAppSchema} from '../education-app.ts';
+import childDomainIntersection from './child-domain-intersection.ts';
+import contradictoryParentDomain from './contradictory-parent-domain.ts';
 import duplicateExistsOrDedupe from './duplicate-exists-or-dedupe.ts';
 import explicitFlipFalse from './explicit-flip-false.ts';
 import explicitFlipTrue from './explicit-flip-true.ts';
@@ -20,6 +22,8 @@ export default [
   studentMembershipMixedOr,
   studentMembershipSimpleExists,
   teacherFilterOrIn,
+  contradictoryParentDomain,
+  childDomainIntersection,
   teacherFilterWithMembership,
   explicitFlipFalse,
   explicitFlipTrue,
