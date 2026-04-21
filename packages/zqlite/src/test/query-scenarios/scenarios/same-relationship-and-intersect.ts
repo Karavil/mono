@@ -17,44 +17,7 @@ const assignmentToStudentRelationship = relationshipName(
 );
 
 export default {
-  name: 'same relationship AND could intersect child scans before parent lookup',
-  knownFailure: {
-    reason:
-      'Two required memberships over the same relationship can be intersected on assignment_id before loading parent rows. The planner currently chooses one child root, loads the parent, then probes the second child relationship.',
-    current: `
-AND
-  exists assignment_to_student where student_id = student-1
-  exists assignment_to_student where student_id = student-2
-
-Plan shape today:
-
-assignment_to_student student-1 => assignment => probe assignment_to_student student-2
-`,
-    desired: `
-AND as child intersection:
-
-assignment_to_student student-1
-assignment_to_student student-2
-both streams grouped by assignment_id
-then assignment lookup
-`,
-    currentSQL: [
-      {
-        table: 'assignment_to_student',
-        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" = ? ORDER BY "assignment_id" asc, "student_id" asc',
-      },
-      {
-        table: 'assignment',
-        sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? AND TRUE ORDER BY "created_at" desc, "id" asc',
-      },
-      {
-        table: 'assignment_to_student',
-        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "assignment_id" = ? AND "student_id" = ? ORDER BY "assignment_id" asc, "student_id" asc',
-      },
-    ],
-    engineIdea:
-      'Teach join enumeration about sibling exists clauses that share the same relationship and correlation under AND. It could introduce an intersection node keyed by the child correlation fields before parent lookup.',
-  },
+  name: 'same relationship AND intersects child scans before parent lookup',
   schema: educationAppSchema,
   seed: db => {
     const tables = createEducationAppTables(db);
@@ -109,5 +72,6 @@ then assignment lookup
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
       },
     ],
+    rows: [{id: 102, teacher_id: 2, archived_at: null, created_at: 102}],
   },
 } satisfies QueryScenario<typeof educationAppSchema>;

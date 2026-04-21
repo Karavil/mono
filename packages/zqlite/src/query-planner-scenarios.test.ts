@@ -45,4 +45,7 @@ function assertScenarioExpectations(
   if (expectations.sql) {
     expect(result.sql).toEqual(expectations.sql);
   }
+  if (expectations.rows) {
+    expect(result.rows).toEqual(expectations.rows);
+  }
 }

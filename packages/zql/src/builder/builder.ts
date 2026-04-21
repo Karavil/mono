@@ -30,6 +30,7 @@ import {Filter} from '../ivm/filter.ts';
 import {FlippedJoin} from '../ivm/flipped-join.ts';
 import {Join} from '../ivm/join.ts';
 import type {Input, InputBase, Storage} from '../ivm/operator.ts';
+import {InputIntersection, InputUnion} from '../ivm/set-operators.ts';
 import {Skip} from '../ivm/skip.ts';
 import type {Source, SourceInput} from '../ivm/source.ts';
 import {Take} from '../ivm/take.ts';
@@ -270,14 +271,36 @@ function buildPipelineInternal(
     assertNoNotExists(ast.where);
   }
 
-  const csqConditions = gatherCorrelatedSubqueryQueryConditions(ast.where);
+  const rootUnionBranches = getRootUnionBranches(ast);
+  if (rootUnionBranches) {
+    return applyRootUnionBranches(
+      ast,
+      rootUnionBranches,
+      delegate,
+      queryID,
+      name,
+      partitionKey,
+    );
+  }
+
+  const intersection = getSameRelationshipExistsIntersection(
+    ast.where,
+    delegate,
+  );
+  const sourceWhere = intersection ? undefined : ast.where;
+  const csqConditions = intersection
+    ? []
+    : gatherCorrelatedSubqueryQueryConditions(ast.where);
   const splitEditKeys: Set<string> = partitionKey
     ? new Set(partitionKey)
     : new Set();
-  const aliases = new Set<string>();
   for (const csq of csqConditions) {
-    aliases.add(csq.related.subquery.alias || '');
     for (const key of csq.related.correlation.parentField) {
+      splitEditKeys.add(key);
+    }
+  }
+  if (intersection) {
+    for (const key of intersection.related.correlation.parentField) {
       splitEditKeys.add(key);
     }
   }
@@ -290,7 +313,7 @@ function buildPipelineInternal(
   }
   const conn = source.connect(
     must(ast.orderBy),
-    ast.where,
+    sourceWhere,
     splitEditKeys,
     delegate.debug,
   );
@@ -298,6 +321,15 @@ function buildPipelineInternal(
   let end: Input = delegate.decorateSourceInput(conn, queryID);
   end = delegate.decorateInput(end, `${name}:source(${ast.table})`);
   const {fullyAppliedFilters} = conn;
+
+  if (intersection) {
+    end = applySameRelationshipExistsIntersection(
+      intersection,
+      delegate,
+      end,
+      name,
+    );
+  }
 
   if (ast.start) {
     const skip = new Skip(end, ast.start);
@@ -328,8 +360,8 @@ function buildPipelineInternal(
     }
   }
 
-  if (ast.where && (!fullyAppliedFilters || delegate.applyFiltersAnyway)) {
-    end = applyWhere(end, ast.where, delegate, name);
+  if (sourceWhere && (!fullyAppliedFilters || delegate.applyFiltersAnyway)) {
+    end = applyWhere(end, sourceWhere, delegate, name);
   }
 
   if (ast.limit !== undefined) {
@@ -356,6 +388,246 @@ function buildPipelineInternal(
   }
 
   return end;
+}
+
+function applyRootUnionBranches(
+  ast: AST,
+  branches: readonly Condition[],
+  delegate: BuilderDelegate,
+  queryID: string,
+  name: string,
+  partitionKey?: CompoundKey,
+): Input {
+  const inputs = branches.map((branch, index) =>
+    buildPipelineInternal(
+      {
+        ...ast,
+        where: branch,
+      },
+      delegate,
+      queryID,
+      `${name}:or-${index}`,
+      partitionKey,
+    ),
+  );
+
+  const union = new InputUnion(inputs);
+  for (const input of inputs) {
+    delegate.addEdge(input, union);
+  }
+  return delegate.decorateInput(union, `${name}:input-union`);
+}
+
+function getRootUnionBranches(ast: AST): readonly Condition[] | undefined {
+  if (
+    ast.where?.type !== 'or' ||
+    ast.where.conditions.length < 2 ||
+    ast.start !== undefined ||
+    ast.limit !== undefined ||
+    ast.related !== undefined
+  ) {
+    return undefined;
+  }
+
+  const branches = ast.where.conditions;
+  if (!branches.some(conditionIncludesFlippedSubqueryAtAnyLevel)) {
+    return undefined;
+  }
+
+  if (!branches.some(isNotAndDoesNotContainSubquery)) {
+    return undefined;
+  }
+
+  if (branches.some(branch => branch.type === 'or')) {
+    return undefined;
+  }
+
+  return branches;
+}
+
+function applySameRelationshipExistsIntersection(
+  intersection: SameRelationshipExistsIntersection,
+  delegate: BuilderDelegate,
+  end: Input,
+  name: string,
+): Input {
+  const {conditions, related} = intersection;
+  const childInputs = conditions.map((condition, index) =>
+    buildPipelineInternal(
+      condition.related.subquery,
+      delegate,
+      '',
+      `${name}.${condition.related.subquery.alias}:intersect-${index}`,
+      related.correlation.childField,
+    ),
+  );
+  const child = new InputIntersection(
+    childInputs,
+    related.correlation.childField,
+  );
+  for (const childInput of childInputs) {
+    delegate.addEdge(childInput, child);
+  }
+
+  const flippedJoin = new FlippedJoin({
+    parent: end,
+    child,
+    parentKey: related.correlation.parentField,
+    childKey: related.correlation.childField,
+    relationshipName: must(
+      related.subquery.alias,
+      'Subquery must have an alias',
+    ),
+    hidden: related.hidden ?? false,
+    system: related.system ?? 'client',
+  });
+  delegate.addEdge(end, flippedJoin);
+  delegate.addEdge(child, flippedJoin);
+  return delegate.decorateInput(
+    flippedJoin,
+    `${name}:intersect-flipped-join(${related.subquery.alias})`,
+  );
+}
+
+type SameRelationshipExistsIntersection = {
+  readonly related: CorrelatedSubquery;
+  readonly conditions: readonly CorrelatedSubqueryCondition[];
+};
+
+function getSameRelationshipExistsIntersection(
+  condition: Condition | undefined,
+  delegate: BuilderDelegate,
+): SameRelationshipExistsIntersection | undefined {
+  if (condition?.type !== 'and') {
+    return undefined;
+  }
+
+  const conditions = condition.conditions.map(getIntersectableExists);
+  if (conditions.some(candidate => candidate === undefined)) {
+    return undefined;
+  }
+
+  const candidates = conditions as CorrelatedSubqueryCondition[];
+  if (candidates.length < 2) {
+    return undefined;
+  }
+  if (!candidates.some(candidate => candidate.flip === true)) {
+    return undefined;
+  }
+
+  const key = sameRelationshipExistsKey(candidates[0]);
+  if (
+    !key ||
+    candidates.some(candidate => sameRelationshipExistsKey(candidate) !== key)
+  ) {
+    return undefined;
+  }
+
+  const childSource = delegate.getSource(candidates[0].related.subquery.table);
+  if (!childSource) {
+    return undefined;
+  }
+
+  if (
+    candidates.some(
+      candidate =>
+        !isUniquePerCorrelationKey(
+          candidate,
+          childSource.tableSchema.primaryKey,
+        ),
+    )
+  ) {
+    return undefined;
+  }
+
+  return {
+    related: candidates[0].related,
+    conditions: candidates,
+  };
+}
+
+function getIntersectableExists(
+  condition: Condition,
+): CorrelatedSubqueryCondition | undefined {
+  if (condition.type !== 'correlatedSubquery') {
+    return undefined;
+  }
+  if (
+    condition.op !== 'EXISTS' ||
+    condition.scalar === true ||
+    condition.flip === false
+  ) {
+    return undefined;
+  }
+
+  const {subquery} = condition.related;
+  if (
+    subquery.related !== undefined ||
+    subquery.start !== undefined ||
+    subquery.limit !== undefined ||
+    (subquery.where !== undefined &&
+      !isNotAndDoesNotContainSubquery(subquery.where))
+  ) {
+    return undefined;
+  }
+  return condition;
+}
+
+function sameRelationshipExistsKey(
+  condition: CorrelatedSubqueryCondition,
+): string | undefined {
+  const exists = getIntersectableExists(condition);
+  if (!exists) {
+    return undefined;
+  }
+
+  const {related} = exists;
+  return JSON.stringify({
+    system: related.system,
+    hidden: related.hidden,
+    correlation: related.correlation,
+    orderBy: related.subquery.orderBy,
+    subquery: {
+      schema: related.subquery.schema,
+      table: related.subquery.table,
+    },
+  });
+}
+
+function isUniquePerCorrelationKey(
+  condition: CorrelatedSubqueryCondition,
+  childPrimaryKey: readonly string[],
+): boolean {
+  const constrained = new Set(condition.related.correlation.childField);
+  collectEqualityConstrainedColumns(
+    condition.related.subquery.where,
+    constrained,
+  );
+  return childPrimaryKey.every(key => constrained.has(key));
+}
+
+function collectEqualityConstrainedColumns(
+  condition: Condition | undefined,
+  constrained: Set<string>,
+): void {
+  if (!condition) {
+    return;
+  }
+  if (condition.type === 'simple') {
+    if (
+      condition.op === '=' &&
+      condition.left.type === 'column' &&
+      condition.right.type === 'literal'
+    ) {
+      constrained.add(condition.left.name);
+    }
+    return;
+  }
+  if (condition.type === 'and') {
+    for (const child of condition.conditions) {
+      collectEqualityConstrainedColumns(child, constrained);
+    }
+  }
 }
 
 function applyWhere(
@@ -420,19 +692,18 @@ function applyFilterWithFlips(
 
       const branches: Input[] = [];
       if (withoutFlipped.length > 0) {
-        branches.push(
-          buildFilterPipeline(end, delegate, filterInput =>
-            applyOr(
-              filterInput,
-              {
-                type: 'or',
-                conditions: withoutFlipped,
-              },
-              delegate,
-              name,
-            ),
+        const branch = buildFilterPipeline(end, delegate, filterInput =>
+          applyOr(
+            filterInput,
+            {
+              type: 'or',
+              conditions: withoutFlipped,
+            },
+            delegate,
+            name,
           ),
         );
+        branches.push(branch);
       }
 
       for (const cond of withFlipped) {

@@ -4,6 +4,7 @@ import {computeZqlSpecs} from '../../../zero-cache/src/db/lite-tables.ts';
 import type {LiteAndZqlSpec} from '../../../zero-cache/src/db/specs.ts';
 import {CREATE_TABLE_METADATA_TABLE} from '../../../zero-cache/src/services/replicator/schema/table-metadata.ts';
 import type {AST} from '../../../zero-protocol/src/ast.ts';
+import type {Row} from '../../../zero-protocol/src/data.ts';
 import type {Schema} from '../../../zero-types/src/schema.ts';
 import {buildPipeline} from '../../../zql/src/builder/builder.ts';
 import {Debug} from '../../../zql/src/builder/debug-delegate.ts';
@@ -54,6 +55,7 @@ export type QueryScenarioExpectations = {
   readonly optimizedAST?: object;
   readonly planDebug?: readonly string[];
   readonly sql?: readonly QueryScenarioSQL[];
+  readonly rows?: readonly Row[];
 };
 
 export type QueryScenarioSQL = {
@@ -66,6 +68,7 @@ export type QueryScenarioResult = {
   readonly optimizedAST: AST;
   readonly planDebug: string;
   readonly sql: readonly QueryScenarioSQL[];
+  readonly rows: readonly Row[];
 };
 
 export function runQueryScenario<S extends Schema>(
@@ -93,7 +96,10 @@ export function runQueryScenario<S extends Schema>(
 
   const input = buildPipeline(optimizedAST, delegate, 'query-scenario');
   const sink = new Catch(input);
-  sink.fetch();
+  const rows = sink
+    .fetch()
+    .filter(node => node !== 'yield')
+    .map(node => node.row);
   sink.destroy();
 
   return {
@@ -101,6 +107,7 @@ export function runQueryScenario<S extends Schema>(
     optimizedAST,
     planDebug: planDebugger.format(),
     sql: debug.queries,
+    rows,
   };
 }
 

@@ -334,10 +334,14 @@ function applyToCondition(
       planIdSymbol
     ];
     const shouldFlip = planId !== undefined && flippedIds.has(planId);
+    const flip =
+      shouldFlip || condition.flip !== undefined
+        ? {flip: shouldFlip}
+        : undefined;
 
     return {
       ...condition,
-      flip: shouldFlip,
+      ...flip,
       related: {
         ...condition.related,
         subquery: {
