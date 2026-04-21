@@ -633,31 +633,47 @@ function getSameRelationshipExistsIntersection(
 function getIntersectableExists(
   condition: Condition,
 ): CorrelatedSubqueryCondition | undefined {
-  // Only plain EXISTS branches participate. Nested subqueries, start, and
-  // limit can all make "does this key exist?" depend on more than the child
-  // predicate's key domain.
-  if (condition.type !== 'correlatedSubquery') {
-    return undefined;
-  }
-  if (
-    condition.op !== 'EXISTS' ||
-    condition.scalar === true ||
-    condition.flip === false
-  ) {
-    return undefined;
-  }
+  // The AND intersection rewrite is only valid for the simple shape below:
+  //
+  //   EXISTS child
+  //     where child filters have no nested EXISTS
+  //     with no child related/start/limit
+  //
+  // Nested relationships, cursors, and limits can make "does this parent key
+  // exist?" depend on more than the child predicate's key domain. In that
+  // world, intersecting child key sets could skip rows that the original
+  // sibling EXISTS checks would have accepted.
+  return match(asCorrelatedSubqueryCondition(condition))
+    .when(isPlainExistsBranch)
+    .when(hasIntersectableChildSubquery)
+    .value();
+}
 
+function asCorrelatedSubqueryCondition(
+  condition: Condition,
+): CorrelatedSubqueryCondition | undefined {
+  return condition.type === 'correlatedSubquery' ? condition : undefined;
+}
+
+function isPlainExistsBranch(condition: CorrelatedSubqueryCondition): boolean {
+  return (
+    condition.op === 'EXISTS' &&
+    condition.scalar !== true &&
+    condition.flip !== false
+  );
+}
+
+function hasIntersectableChildSubquery(
+  condition: CorrelatedSubqueryCondition,
+): boolean {
   const {subquery} = condition.related;
-  if (
-    subquery.related !== undefined ||
-    subquery.start !== undefined ||
-    subquery.limit !== undefined ||
-    (subquery.where !== undefined &&
-      !isNotAndDoesNotContainSubquery(subquery.where))
-  ) {
-    return undefined;
-  }
-  return condition;
+  return (
+    subquery.related === undefined &&
+    subquery.start === undefined &&
+    subquery.limit === undefined &&
+    (subquery.where === undefined ||
+      isNotAndDoesNotContainSubquery(subquery.where))
+  );
 }
 
 function sameRelationshipExistsKey(
@@ -1170,4 +1186,23 @@ export function partitionBranches(
     }
   }
   return [matched, notMatched] as const;
+}
+
+type Matcher<T> = {
+  readonly when: (predicate: (value: T) => boolean) => Matcher<T>;
+  readonly value: () => T | undefined;
+};
+
+// A tiny Effect Match inspired helper for linear eligibility checks. It keeps
+// optimizer code shaped like "start with this candidate, then require these
+// properties" without hiding the individual predicates behind a large helper.
+function match<T>(value: T | undefined): Matcher<T> {
+  return {
+    when(predicate) {
+      return match(value !== undefined && predicate(value) ? value : undefined);
+    },
+    value() {
+      return value;
+    },
+  };
 }
