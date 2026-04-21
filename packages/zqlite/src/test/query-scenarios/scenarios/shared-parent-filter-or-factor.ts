@@ -94,6 +94,11 @@ export default {
         ],
       },
     },
+    transformations: [
+      'Both OR branches repeat the same archived_at parent filter, so factor that predicate outside the OR.',
+      'After factoring, the two membership branches are the same relationship and collapse into one student_id IN child filter.',
+      'Flip that merged membership scan and apply archived_at during the assignment lookup.',
+    ],
     sql: [
       {
         table: 'assignment_to_student',

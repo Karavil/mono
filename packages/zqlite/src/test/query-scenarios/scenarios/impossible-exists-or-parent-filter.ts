@@ -51,6 +51,10 @@ export default {
         right: {type: 'literal', value: 1},
       },
     },
+    transformations: [
+      'The child branch cannot return rows because student_id IN empty set is always false.',
+      'A false OR branch adds nothing, so the optimizer drops it and keeps the surviving teacher filter.',
+    ],
     sql: [
       {
         table: 'assignment',

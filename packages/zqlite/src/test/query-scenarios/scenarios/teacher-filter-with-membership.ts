@@ -61,6 +61,10 @@ export default {
       },
     },
     planDebug: ['semi'],
+    transformations: [
+      'The assignment side is already very selective because teacher_id and archived_at filter the parent table first.',
+      'Keep the EXISTS as a semi join: scan those few assignments, then probe membership for each candidate assignment.',
+    ],
     sql: [
       {
         table: 'assignment',

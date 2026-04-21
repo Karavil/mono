@@ -62,6 +62,10 @@ export default {
       .orderBy(colName(assignment, 'created_at'), 'desc')
       .orderBy(colName(assignment, 'id'), 'asc'),
   expectations: {
+    transformations: [
+      'Two sibling EXISTS checks on the same relationship mean the assignment must appear in both child result sets.',
+      'Scan membership for each student, intersect those streams by assignment_id, then load only assignments whose key survived both scans.',
+    ],
     sql: [
       {
         table: 'assignment_to_student',

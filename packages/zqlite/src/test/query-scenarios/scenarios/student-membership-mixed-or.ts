@@ -77,6 +77,11 @@ export default {
       },
     },
     planDebug: ['Best plan: Attempt 2', 'FO ⋈ assignment_to_student: flipped'],
+    transformations: [
+      'Keep the shared archived assignment filter on both paths.',
+      'Run the teacher branch from assignment rows, then flip the selective membership branch so student rows become their own root.',
+      'Union the assignment rows produced by both roots, using the assignment primary key to avoid duplicates.',
+    ],
     sql: [
       {
         table: 'assignment',

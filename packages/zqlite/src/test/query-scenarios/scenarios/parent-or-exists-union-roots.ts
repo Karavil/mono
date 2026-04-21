@@ -68,6 +68,10 @@ export default {
       },
     },
     planDebug: ['FO ⋈ assignment_to_student: flipped'],
+    transformations: [
+      'This mixed OR has two selective roots: assignments for the teacher branch and membership rows for the student branch.',
+      'Run both roots separately, flip only the membership side, then union assignment rows by primary key.',
+    ],
     sql: [
       {
         table: 'assignment',

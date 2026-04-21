@@ -67,6 +67,10 @@ export default {
         flip: true,
       },
     },
+    transformations: [
+      'The OR repeats the exact same EXISTS branch, so one copy is redundant.',
+      'Deduplicate the relationship branch, then flip the single surviving membership predicate into one child scan.',
+    ],
     sql: [
       {
         table: 'assignment_to_student',

@@ -40,6 +40,10 @@ export default {
         conditions: [],
       },
     },
+    transformations: [
+      'The same parent column is required to be both teacher_id equals 1 and teacher_id not equals 1.',
+      'Intersecting those domains leaves no possible assignment row, so the filter collapses to FALSE.',
+    ],
     sql: [
       {
         table: 'assignment',

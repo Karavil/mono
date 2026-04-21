@@ -78,6 +78,11 @@ export default {
       },
     },
     planDebug: ['flipped'],
+    transformations: [
+      'First remove the false OR branch because it cannot contribute rows.',
+      'Keep the shared archived assignment filter on both paths, scan the teacher branch from assignments, and flip the membership branch from student rows.',
+      'Union both assignment roots by primary key so the mixed OR does not degrade into a broad assignment scan.',
+    ],
     sql: [
       {
         table: 'assignment',

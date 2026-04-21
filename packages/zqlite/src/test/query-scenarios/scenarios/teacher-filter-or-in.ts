@@ -42,6 +42,10 @@ export default {
         right: {type: 'literal', value: [1, 2]},
       },
     },
+    transformations: [
+      'Two equality checks on the same parent column describe one finite set.',
+      'Normalize teacher_id equals 1 OR teacher_id equals 2 into one teacher_id IN filter so SQLite can use one compact assignment scan.',
+    ],
     sql: [
       {
         table: 'assignment',

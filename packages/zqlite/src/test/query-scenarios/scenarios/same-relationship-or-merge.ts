@@ -67,6 +67,10 @@ export default {
         flip: true,
       },
     },
+    transformations: [
+      'The sibling EXISTS branches use the same relationship and differ only by their child student filter.',
+      'Merge them into one child student_id IN predicate so the planner flips one membership scan instead of running two equivalent relationship paths.',
+    ],
     sql: [
       {
         table: 'assignment_to_student',

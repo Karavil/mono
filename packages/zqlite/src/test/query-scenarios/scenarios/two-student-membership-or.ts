@@ -78,6 +78,10 @@ export default {
       },
     },
     planDebug: ['flipped'],
+    transformations: [
+      'Both OR branches are the same relationship with the same assignment correlation.',
+      'Merge the two child equality checks into one student_id IN filter, then flip to a single membership scan followed by assignment lookups.',
+    ],
     sql: [
       {
         table: 'assignment_to_student',

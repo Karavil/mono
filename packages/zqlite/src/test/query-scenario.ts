@@ -54,6 +54,9 @@ export type QueryScenario<S extends Schema> = {
 export type QueryScenarioExpectations = {
   readonly optimizedAST?: object;
   readonly planDebug?: readonly string[];
+  // Human readable optimizer story placed next to SQL expectations so each
+  // scenario explains why that physical shape is desirable.
+  readonly transformations: readonly string[];
   readonly sql?: readonly QueryScenarioSQL[];
   readonly rows?: readonly Row[];
 };

@@ -60,6 +60,10 @@ export default {
         ],
       },
     },
+    transformations: [
+      'The query explicitly says flip false, so the planner preserves that manual choice.',
+      'Assignment remains the root stream and each candidate assignment probes membership by assignment_id and student_id.',
+    ],
     sql: [
       {
         table: 'assignment',

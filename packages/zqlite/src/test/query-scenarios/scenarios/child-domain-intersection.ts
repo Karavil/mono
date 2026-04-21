@@ -71,6 +71,10 @@ export default {
       },
     },
     planDebug: ['flipped'],
+    transformations: [
+      'First narrow the child predicate from student_id IN student 1 or student 2 plus student_id not student 2 down to just student 1.',
+      'After that child domain is simplified, flip the EXISTS and scan membership before loading assignments.',
+    ],
     sql: [
       {
         table: 'assignment_to_student',

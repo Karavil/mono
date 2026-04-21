@@ -38,6 +38,10 @@ export default {
         right: {type: 'literal', value: 1},
       },
     },
+    transformations: [
+      'An empty OR is always false, and false is an identity branch inside a larger OR.',
+      'Drop the dead branch and plan the remaining teacher filter as the whole assignment predicate.',
+    ],
     sql: [
       {
         table: 'assignment',

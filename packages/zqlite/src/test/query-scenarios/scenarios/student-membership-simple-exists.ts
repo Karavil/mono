@@ -60,6 +60,10 @@ export default {
       },
     },
     planDebug: ['flipped'],
+    transformations: [
+      'The membership predicate is more selective than scanning assignments, so the EXISTS flips.',
+      'Scan assignment_to_student by student first, then look up matching assignments and apply the archived filter during that parent lookup.',
+    ],
     sql: [
       {
         table: 'assignment_to_student',
