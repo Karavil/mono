@@ -60,10 +60,14 @@ export default {
         ],
       },
     },
-    transformations: [
-      'The query explicitly says flip true, so membership becomes the root even though the dataset is small.',
-      'Scan membership by student, then look up assignments by id and apply the archived parent filter.',
-    ],
+    // Before -> after:
+    //
+    //   assignment(archived)
+    //     EXISTS membership(student) with flip true
+    //
+    //   membership(student) -> assignment(id, archived)
+    //
+    // Explicit flip true makes membership the root.
     sql: [
       {
         table: 'assignment_to_student',

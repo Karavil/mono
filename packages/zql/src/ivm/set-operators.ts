@@ -39,8 +39,15 @@ import {mergeFetches} from './union-fan-in.ts';
  * keys are represented by the first branch in input order. Push has to preserve
  * that same "earliest branch owns the row" rule, including handoffs:
  *
- *   later owns row {id: 1, value: 20}
- *   earlier adds   {id: 1, value: 10}
+ *   before push:
+ *     branch 0: empty
+ *     branch 1: {id: 1, value: 20}
+ *     output:   {id: 1, value: 20}
+ *
+ *   after branch 0 adds {id: 1, value: 10}:
+ *     branch 0: {id: 1, value: 10}
+ *     branch 1: {id: 1, value: 20}
+ *     output:   {id: 1, value: 10}
  *
  * The visible result did not gain a new primary key. Its representative row
  * changed, so downstream receives EDIT(value 20 -> 10).
@@ -74,9 +81,14 @@ export class InputUnion implements Input {
   }
 
   fetch(req: FetchRequest): Stream<Node | 'yield'> {
+    const compareRows = req.reverse
+      ? (left: Node, right: Node) =>
+          this.#schema.compareRows(right.row, left.row)
+      : (left: Node, right: Node) =>
+          this.#schema.compareRows(left.row, right.row);
     return mergeFetches(
       this.#inputs.map(input => input.fetch(req)),
-      (left, right) => this.#schema.compareRows(left.row, right.row),
+      compareRows,
     );
   }
 

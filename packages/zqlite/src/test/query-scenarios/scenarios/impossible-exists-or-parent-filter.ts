@@ -51,10 +51,13 @@ export default {
         right: {type: 'literal', value: 1},
       },
     },
-    transformations: [
-      'The child branch cannot return rows because student_id IN empty set is always false.',
-      'A false OR branch adds nothing, so the optimizer drops it and keeps the surviving teacher filter.',
-    ],
+    // Before -> after:
+    //
+    //   teacher_id = 1 OR EXISTS membership(student IN [])
+    //
+    //   teacher_id = 1
+    //
+    // The impossible EXISTS branch is false, so OR keeps only the real branch.
     sql: [
       {
         table: 'assignment',

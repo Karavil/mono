@@ -67,10 +67,13 @@ export default {
         flip: true,
       },
     },
-    transformations: [
-      'The OR repeats the exact same EXISTS branch, so one copy is redundant.',
-      'Deduplicate the relationship branch, then flip the single surviving membership predicate into one child scan.',
-    ],
+    // Before -> after:
+    //
+    //   EXISTS membership(student = 1) OR EXISTS membership(student = 1)
+    //
+    //   membership(student = 1) -> assignment(id)
+    //
+    // Duplicate OR branches collapse before the surviving EXISTS flips.
     sql: [
       {
         table: 'assignment_to_student',
@@ -79,6 +82,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

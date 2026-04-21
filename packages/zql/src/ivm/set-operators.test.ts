@@ -52,6 +52,24 @@ describe('InputUnion', () => {
     ]);
   });
 
+  test('fetch merges reversed inputs with the reversed comparator', () => {
+    const left = new MutableInput([
+      node({id: 1, value: 10}),
+      node({id: 3, value: 30}),
+    ]);
+    const right = new MutableInput([
+      node({id: 2, value: 20}),
+      node({id: 3, value: 30}),
+      node({id: 4, value: 40}),
+    ]);
+
+    const union = new InputUnion([left, right]);
+
+    expect(
+      Array.from(skipYields(union.fetch({reverse: true})), n => n.row.id),
+    ).toEqual([4, 3, 2, 1]);
+  });
+
   test('push emits one add, remove, or edit when multiple branches match', () => {
     const left = new MutableInput([]);
     const right = new MutableInput([]);
@@ -307,7 +325,8 @@ class MutableInput implements Input {
   }
 
   *fetch(req: FetchRequest): Stream<Node | 'yield'> {
-    for (const row of this.rows) {
+    const rows = req.reverse ? this.rows.toReversed() : this.rows;
+    for (const row of rows) {
       if (matchesConstraint(row.row, req.constraint)) {
         yield row;
       }

@@ -94,11 +94,14 @@ export default {
         ],
       },
     },
-    transformations: [
-      'Both OR branches repeat the same archived_at parent filter, so factor that predicate outside the OR.',
-      'After factoring, the two membership branches are the same relationship and collapse into one student_id IN child filter.',
-      'Flip that merged membership scan and apply archived_at during the assignment lookup.',
-    ],
+    // Before -> after:
+    //
+    //   (archived AND EXISTS membership(student = 1))
+    //     OR (archived AND EXISTS membership(student = 2))
+    //
+    //   membership(student IN (1, 2)) -> assignment(id, archived)
+    //
+    // Factor the shared parent filter, merge the child domains, then flip.
     sql: [
       {
         table: 'assignment_to_student',
@@ -107,6 +110,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? AND "archived_at" IS ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

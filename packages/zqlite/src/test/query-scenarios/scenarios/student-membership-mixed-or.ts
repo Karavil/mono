@@ -77,11 +77,15 @@ export default {
       },
     },
     planDebug: ['Best plan: Attempt 2', 'FO ⋈ assignment_to_student: flipped'],
-    transformations: [
-      'Keep the shared archived assignment filter on both paths.',
-      'Run the teacher branch from assignment rows, then flip the selective membership branch so student rows become their own root.',
-      'Union the assignment rows produced by both roots, using the assignment primary key to avoid duplicates.',
-    ],
+    // Before -> after:
+    //
+    //   assignment
+    //     archived AND (teacher OR EXISTS membership(student))
+    //
+    //   assignment(archived), with teacher checked above the SQL scan
+    //     for the parent branch
+    //       UNION on assignment.id
+    //   membership(student) -> assignment(id, archived)
     sql: [
       {
         table: 'assignment',
@@ -94,6 +98,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? AND "archived_at" IS ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

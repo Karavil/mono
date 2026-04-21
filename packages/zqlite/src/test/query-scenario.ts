@@ -21,18 +21,28 @@ import {createSQLiteCostModel} from '../sqlite-cost-model.ts';
 import {newQueryDelegate} from './source-factory.ts';
 
 type QuerySeen = {
-  readonly table: string;
-  readonly sql: string;
+  table: string;
+  sql: string;
+  calls: number;
 };
 
 class ScenarioDebug extends Debug {
   readonly queries: QuerySeen[] = [];
 
   override initQuery(table: string, query: string): void {
-    if (!this.queries.some(q => q.table === table && q.sql === query)) {
-      this.queries.push({table, sql: query});
+    const seen = this.queries.find(q => q.table === table && q.sql === query);
+    if (seen) {
+      seen.calls++;
+    } else {
+      this.queries.push({table, sql: query, calls: 1});
     }
     super.initQuery(table, query);
+  }
+
+  compactQueries(): readonly QueryScenarioSQL[] {
+    return this.queries.map(({table, sql, calls}) =>
+      calls === 1 ? {table, sql} : {table, sql, calls},
+    );
   }
 }
 
@@ -54,9 +64,6 @@ export type QueryScenario<S extends Schema> = {
 export type QueryScenarioExpectations = {
   readonly optimizedAST?: object;
   readonly planDebug?: readonly string[];
-  // Human readable optimizer story placed next to SQL expectations so each
-  // scenario explains why that physical shape is desirable.
-  readonly transformations: readonly string[];
   readonly sql?: readonly QueryScenarioSQL[];
   readonly rows?: readonly Row[];
 };
@@ -64,6 +71,7 @@ export type QueryScenarioExpectations = {
 export type QueryScenarioSQL = {
   readonly table: string;
   readonly sql: string;
+  readonly calls?: number | undefined;
 };
 
 export type QueryScenarioResult = {
@@ -99,10 +107,10 @@ export function runQueryScenario<S extends Schema>(
 
   const input = buildPipeline(optimizedAST, delegate, 'query-scenario');
   const sink = new Catch(input);
-  // SQL shape alone can be misleading because ScenarioDebug dedupes query text:
-  // the two student membership scans in an intersection scenario have the same
-  // SQL and different bind values. Row expectations prove the optimized
-  // physical shape still returns the intended result set.
+  // SQL shape alone can be misleading because repeated query text can hide
+  // multiple physical scans with different bind values. ScenarioDebug keeps the
+  // SQL list readable by compacting repeated text into a calls count, so the
+  // intersection scenarios can prove both membership scans happen.
   const rows = sink
     .fetch()
     .filter(node => node !== 'yield')
@@ -113,7 +121,7 @@ export function runQueryScenario<S extends Schema>(
     ast,
     optimizedAST,
     planDebug: planDebugger.format(),
-    sql: debug.queries,
+    sql: debug.compactQueries(),
     rows,
   };
 }

@@ -71,10 +71,14 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    transformations: [
-      'First narrow the child predicate from student_id IN student 1 or student 2 plus student_id not student 2 down to just student 1.',
-      'After that child domain is simplified, flip the EXISTS and scan membership before loading assignments.',
-    ],
+    // Before -> after:
+    //
+    //   assignment
+    //     EXISTS membership(student IN (1, 2) AND student != 2)
+    //
+    //   membership(student = 1) -> assignment(id)
+    //
+    // Simplify the child domain first, then flip the selective EXISTS.
     sql: [
       {
         table: 'assignment_to_student',
@@ -83,6 +87,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
+        calls: 2,
       },
     ],
   },

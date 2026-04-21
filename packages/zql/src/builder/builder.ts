@@ -283,9 +283,12 @@ function buildPipelineInternal(
   // becomes:
   //
   //   parent WHERE A        child WHERE B
-  //          \              /
-  //           \            /
-  //              InputUnion
+  //          |                   |
+  //          |             lookup parent by FK
+  //          |                   |
+  //      parent rows        parent rows
+  //              \          /
+  //               InputUnion
   //
   // AND shape:
   //
@@ -299,9 +302,9 @@ function buildPipelineInternal(
   //                 |
   //          FlippedJoin to parent
   //
-  // The guards on each rewrite are intentionally strict. If a query needs
-  // limits, related rows, non unique child matches, or nested subquery
-  // semantics, it falls through to the older pipeline.
+  // Each rewrite has its own strict guard below. If a query needs a shape the
+  // new physical operator cannot preserve, it falls through to the older
+  // generic pipeline.
   const rootUnionBranches = getRootUnionBranches(ast);
   if (rootUnionBranches) {
     return applyRootUnionBranches(
@@ -595,10 +598,12 @@ function getSameRelationshipExistsIntersection(
     return undefined;
   }
 
-  const key = sameRelationshipExistsKey(candidates[0]);
+  const fingerprint = sameRelationshipExistsFingerprint(candidates[0]);
   if (
-    !key ||
-    candidates.some(candidate => sameRelationshipExistsKey(candidate) !== key)
+    !fingerprint ||
+    candidates.some(
+      candidate => sameRelationshipExistsFingerprint(candidate) !== fingerprint,
+    )
   ) {
     return undefined;
   }
@@ -612,6 +617,13 @@ function getSameRelationshipExistsIntersection(
   // per child correlation key, so each branch must be unique for that key.
   // If a branch could return two child rows for the same parent, intersecting
   // keys would no longer match the row-level EXISTS stream semantics.
+  //
+  //   child PK:        [assignment_id, student_id]
+  //   correlation key: [assignment_id]
+  //   child filter:    student_id = 'student-1'
+  //
+  // The correlation key plus the child filter covers the child PK, so this
+  // branch can produce at most one row for each assignment_id.
   if (
     candidates.some(
       candidate =>
@@ -643,10 +655,17 @@ function getIntersectableExists(
   // exist?" depend on more than the child predicate's key domain. In that
   // world, intersecting child key sets could skip rows that the original
   // sibling EXISTS checks would have accepted.
-  return match(asCorrelatedSubqueryCondition(condition))
-    .when(isPlainExistsBranch)
-    .when(hasIntersectableChildSubquery)
-    .value();
+  const exists = asCorrelatedSubqueryCondition(condition);
+  if (!exists) {
+    return undefined;
+  }
+  if (!isPlainExistsBranch(exists)) {
+    return undefined;
+  }
+  if (!hasIntersectableChildSubquery(exists)) {
+    return undefined;
+  }
+  return exists;
 }
 
 function asCorrelatedSubqueryCondition(
@@ -676,7 +695,7 @@ function hasIntersectableChildSubquery(
   );
 }
 
-function sameRelationshipExistsKey(
+function sameRelationshipExistsFingerprint(
   condition: CorrelatedSubqueryCondition,
 ): string | undefined {
   const exists = getIntersectableExists(condition);
@@ -1186,23 +1205,4 @@ export function partitionBranches(
     }
   }
   return [matched, notMatched] as const;
-}
-
-type Matcher<T> = {
-  readonly when: (predicate: (value: T) => boolean) => Matcher<T>;
-  readonly value: () => T | undefined;
-};
-
-// A tiny Effect Match inspired helper for linear eligibility checks. It keeps
-// optimizer code shaped like "start with this candidate, then require these
-// properties" without hiding the individual predicates behind a large helper.
-function match<T>(value: T | undefined): Matcher<T> {
-  return {
-    when(predicate) {
-      return match(value !== undefined && predicate(value) ? value : undefined);
-    },
-    value() {
-      return value;
-    },
-  };
 }

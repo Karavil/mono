@@ -67,10 +67,13 @@ export default {
         flip: true,
       },
     },
-    transformations: [
-      'The sibling EXISTS branches use the same relationship and differ only by their child student filter.',
-      'Merge them into one child student_id IN predicate so the planner flips one membership scan instead of running two equivalent relationship paths.',
-    ],
+    // Before -> after:
+    //
+    //   EXISTS membership(student = 1) OR EXISTS membership(student = 2)
+    //
+    //   membership(student IN (1, 2)) -> assignment(id)
+    //
+    // Sibling EXISTS branches over the same edge become one flipped scan.
     sql: [
       {
         table: 'assignment_to_student',
@@ -79,6 +82,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

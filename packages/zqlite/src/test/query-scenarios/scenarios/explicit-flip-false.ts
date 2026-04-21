@@ -60,10 +60,16 @@ export default {
         ],
       },
     },
-    transformations: [
-      'The query explicitly says flip false, so the planner preserves that manual choice.',
-      'Assignment remains the root stream and each candidate assignment probes membership by assignment_id and student_id.',
-    ],
+    // Before -> after:
+    //
+    //   assignment(archived)
+    //     EXISTS membership(student) with flip false
+    //
+    //   assignment(archived) -> membership(assignment_id, student)
+    //
+    // Explicit flip false is user intent, so assignment remains the root.
+    // calls: 26 includes the repeated per-assignment membership probes plus
+    // the final probe used while exhausting the parent stream.
     sql: [
       {
         table: 'assignment',
@@ -72,6 +78,7 @@ export default {
       {
         table: 'assignment_to_student',
         sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "assignment_id" = ? AND "student_id" = ? ORDER BY "assignment_id" asc, "student_id" asc',
+        calls: 26,
       },
     ],
   },

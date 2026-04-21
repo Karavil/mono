@@ -7,6 +7,15 @@ import {
 import type {educationAppSchema} from './test/query-scenarios/education-app.ts';
 import scenarios from './test/query-scenarios/scenarios/index.ts';
 
+// Scenario comments use a small visual legend:
+//
+//   Before: the logical ZQL filter shape.
+//   After:  the physical SQL scan order the optimized pipeline produces.
+//
+//   A -> B
+//
+// means scan A first, then look up B. UNION and INTERSECT describe how parent
+// row ids from separate roots are combined before rows reach the final result.
 for (const scenario of scenarios as readonly QueryScenario<
   typeof educationAppSchema
 >[]) {

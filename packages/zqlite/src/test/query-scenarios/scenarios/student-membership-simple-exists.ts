@@ -60,10 +60,14 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    transformations: [
-      'The membership predicate is more selective than scanning assignments, so the EXISTS flips.',
-      'Scan assignment_to_student by student first, then look up matching assignments and apply the archived filter during that parent lookup.',
-    ],
+    // Before -> after:
+    //
+    //   assignment(archived)
+    //     EXISTS membership(student)
+    //
+    //   membership(student) -> assignment(id, archived)
+    //
+    // The child predicate is selective, so membership becomes the root.
     sql: [
       {
         table: 'assignment_to_student',
@@ -72,6 +76,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? AND "archived_at" IS ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

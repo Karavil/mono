@@ -78,11 +78,17 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    transformations: [
-      'First remove the false OR branch because it cannot contribute rows.',
-      'Keep the shared archived assignment filter on both paths, scan the teacher branch from assignments, and flip the membership branch from student rows.',
-      'Union both assignment roots by primary key so the mixed OR does not degrade into a broad assignment scan.',
-    ],
+    // Before -> after:
+    //
+    //   assignment
+    //     archived AND (teacher OR FALSE OR EXISTS membership(student))
+    //
+    //   assignment(archived), with teacher checked above the SQL scan
+    //     for the parent branch
+    //       UNION on assignment.id
+    //   membership(student) -> assignment(id, archived)
+    //
+    // Drop FALSE, then plan the remaining mixed OR as two roots.
     sql: [
       {
         table: 'assignment',
@@ -95,6 +101,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? AND "archived_at" IS ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

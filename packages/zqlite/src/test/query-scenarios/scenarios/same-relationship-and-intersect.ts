@@ -62,14 +62,24 @@ export default {
       .orderBy(colName(assignment, 'created_at'), 'desc')
       .orderBy(colName(assignment, 'id'), 'asc'),
   expectations: {
-    transformations: [
-      'Two sibling EXISTS checks on the same relationship mean the assignment must appear in both child result sets.',
-      'Scan membership for each student, intersect those streams by assignment_id, then load only assignments whose key survived both scans.',
-    ],
+    // Before -> after:
+    //
+    //   EXISTS membership(student = 1)
+    //     AND EXISTS membership(student = 2)
+    //
+    //   membership(student = 1)
+    //       INTERSECT on assignment_id
+    //   membership(student = 2)
+    //       -> assignment(id)
+    //
+    // AND means the assignment key must survive both child streams.
+    // The membership SQL has calls: 2 because the same SELECT text runs once
+    // for each student bind value before the assignment_id intersection.
     sql: [
       {
         table: 'assignment_to_student',
         sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" = ? ORDER BY "assignment_id" asc, "student_id" asc',
+        calls: 2,
       },
       {
         table: 'assignment',

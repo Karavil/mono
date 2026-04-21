@@ -78,10 +78,13 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    transformations: [
-      'Both OR branches are the same relationship with the same assignment correlation.',
-      'Merge the two child equality checks into one student_id IN filter, then flip to a single membership scan followed by assignment lookups.',
-    ],
+    // Before -> after:
+    //
+    //   EXISTS membership(student = 1) OR EXISTS membership(student = 2)
+    //
+    //   membership(student IN (1, 2)) -> assignment(id)
+    //
+    // Same relationship, same correlation, one merged child domain.
     sql: [
       {
         table: 'assignment_to_student',
@@ -90,6 +93,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

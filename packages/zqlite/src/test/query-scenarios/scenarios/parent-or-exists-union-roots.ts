@@ -68,10 +68,16 @@ export default {
       },
     },
     planDebug: ['FO ⋈ assignment_to_student: flipped'],
-    transformations: [
-      'This mixed OR has two selective roots: assignments for the teacher branch and membership rows for the student branch.',
-      'Run both roots separately, flip only the membership side, then union assignment rows by primary key.',
-    ],
+    // Before -> after:
+    //
+    //   assignment
+    //     teacher OR EXISTS membership(student)
+    //
+    //   assignment(teacher)
+    //       UNION on assignment.id
+    //   membership(student) -> assignment(id)
+    //
+    // Mixed OR branches each keep the most selective root.
     sql: [
       {
         table: 'assignment',
@@ -84,6 +90,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

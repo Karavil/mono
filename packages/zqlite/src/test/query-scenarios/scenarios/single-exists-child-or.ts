@@ -58,10 +58,14 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    transformations: [
-      'The OR lives inside one child EXISTS, so the student predicates can be merged before planning the join.',
-      'Turn those child predicates into one student_id IN scan, flip the EXISTS, and load assignments by the correlated assignment key.',
-    ],
+    // Before -> after:
+    //
+    //   assignment
+    //     EXISTS membership(student = 1 OR student = 2)
+    //
+    //   membership(student IN (1, 2)) -> assignment(id)
+    //
+    // Merge the child OR before choosing the flipped root.
     sql: [
       {
         table: 'assignment_to_student',
@@ -70,6 +74,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },
