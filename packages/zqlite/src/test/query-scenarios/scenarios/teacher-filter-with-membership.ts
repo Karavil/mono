@@ -61,6 +61,29 @@ export default {
       },
     },
     planDebug: ['semi'],
+    // Submitted ZQL:
+    //
+    //   assignment
+    //     .where(archived_at IS null AND teacher_id = 1)
+    //     .whereExists(assignment_to_student, student_id = 'student-1')
+    //
+    // Naive plan:
+    //
+    //   assignment(archived_at IS null AND teacher_id = 1)
+    //     `-- for each matching assignment, probe membership
+    //
+    // Optimized plan:
+    //
+    //   assignment(archived_at IS null AND teacher_id = 1)
+    //     `-- probe assignment_to_student(
+    //           assignment_id = current assignment.id,
+    //           student_id = 'student-1'
+    //         )
+    //
+    // Intuition:
+    //
+    //   The parent filters are already selective enough, so staying on
+    //   assignment avoids starting from membership and then fetching parents.
     sql: [
       {
         table: 'assignment',

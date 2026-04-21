@@ -4,6 +4,7 @@ import {computeZqlSpecs} from '../../../zero-cache/src/db/lite-tables.ts';
 import type {LiteAndZqlSpec} from '../../../zero-cache/src/db/specs.ts';
 import {CREATE_TABLE_METADATA_TABLE} from '../../../zero-cache/src/services/replicator/schema/table-metadata.ts';
 import type {AST} from '../../../zero-protocol/src/ast.ts';
+import type {Row} from '../../../zero-protocol/src/data.ts';
 import type {Schema} from '../../../zero-types/src/schema.ts';
 import {buildPipeline} from '../../../zql/src/builder/builder.ts';
 import {Debug} from '../../../zql/src/builder/debug-delegate.ts';
@@ -20,18 +21,28 @@ import {createSQLiteCostModel} from '../sqlite-cost-model.ts';
 import {newQueryDelegate} from './source-factory.ts';
 
 type QuerySeen = {
-  readonly table: string;
-  readonly sql: string;
+  table: string;
+  sql: string;
+  calls: number;
 };
 
 class ScenarioDebug extends Debug {
   readonly queries: QuerySeen[] = [];
 
   override initQuery(table: string, query: string): void {
-    if (!this.queries.some(q => q.table === table && q.sql === query)) {
-      this.queries.push({table, sql: query});
+    const seen = this.queries.find(q => q.table === table && q.sql === query);
+    if (seen) {
+      seen.calls++;
+    } else {
+      this.queries.push({table, sql: query, calls: 1});
     }
     super.initQuery(table, query);
+  }
+
+  compactQueries(): readonly QueryScenarioSQL[] {
+    return this.queries.map(({table, sql, calls}) =>
+      calls === 1 ? {table, sql} : {table, sql, calls},
+    );
   }
 }
 
@@ -54,11 +65,13 @@ export type QueryScenarioExpectations = {
   readonly optimizedAST?: object;
   readonly planDebug?: readonly string[];
   readonly sql?: readonly QueryScenarioSQL[];
+  readonly rows?: readonly Row[];
 };
 
 export type QueryScenarioSQL = {
   readonly table: string;
   readonly sql: string;
+  readonly calls?: number | undefined;
 };
 
 export type QueryScenarioResult = {
@@ -66,6 +79,7 @@ export type QueryScenarioResult = {
   readonly optimizedAST: AST;
   readonly planDebug: string;
   readonly sql: readonly QueryScenarioSQL[];
+  readonly rows: readonly Row[];
 };
 
 export function runQueryScenario<S extends Schema>(
@@ -84,23 +98,38 @@ export function runQueryScenario<S extends Schema>(
 
   const builder = createBuilder(scenario.schema);
   const ast = asQueryInternals(scenario.query(builder)).ast;
-  const planDebugger = new AccumulatorDebugger();
-  const optimizedAST = planQueryOnce(ast, costModel, planDebugger);
+  const optimizedAST = planQueryOnce(ast, costModel, new AccumulatorDebugger());
 
   const debug = new ScenarioDebug();
   const delegate = newQueryDelegate(lc, testLogConfig, db, scenario.schema);
   delegate.debug = debug;
 
-  const input = buildPipeline(optimizedAST, delegate, 'query-scenario');
+  const planDebugger = new AccumulatorDebugger();
+  const input = buildPipeline(
+    ast,
+    delegate,
+    'query-scenario',
+    costModel,
+    lc,
+    planDebugger,
+  );
   const sink = new Catch(input);
-  sink.fetch();
+  // SQL shape alone can be misleading because repeated query text can hide
+  // multiple physical scans with different bind values. ScenarioDebug keeps the
+  // SQL list readable by compacting repeated text into a calls count, so the
+  // intersection scenarios can prove both membership scans happen.
+  const rows = sink
+    .fetch()
+    .filter(node => node !== 'yield')
+    .map(node => node.row);
   sink.destroy();
 
   return {
     ast,
     optimizedAST,
     planDebug: planDebugger.format(),
-    sql: debug.queries,
+    sql: debug.compactQueries(),
+    rows,
   };
 }
 

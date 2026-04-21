@@ -77,6 +77,33 @@ export default {
       },
     },
     planDebug: ['Best plan: Attempt 2', 'FO ⋈ assignment_to_student: flipped'],
+    // Submitted ZQL:
+    //
+    //   assignment.where(
+    //     archived_at IS null
+    //     AND (
+    //       teacher_id = 1
+    //       OR EXISTS assignment_to_student(student_id = 'student-1')
+    //     )
+    //   )
+    //
+    // Naive plan:
+    //
+    //   assignment(archived_at IS null)
+    //     |-- check teacher_id = 1
+    //     `-- if needed, probe membership by assignment_id
+    //
+    // Optimized plan:
+    //
+    //   assignment(archived_at IS null, teacher_id = 1) ----------.
+    //                                                             +-- union
+    //   assignment_to_student(student_id = 'student-1') -> parent -'
+    //       `-- keep parent only if archived_at IS null
+    //
+    // Intuition:
+    //
+    //   The shared archived filter stays on both branches, while the OR splits
+    //   so each side can use its own selective index.
     sql: [
       {
         table: 'assignment',
@@ -89,6 +116,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? AND "archived_at" IS ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

@@ -10,7 +10,7 @@ import {
 const assignment = educationAppTables.assignment;
 
 export default {
-  name: 'OR with false branch keeps surviving teacher predicate',
+  name: 'contradictory same column parent filters collapse to false',
   schema: educationAppSchema,
   seed: db => {
     const tables = createEducationAppTables(db);
@@ -19,50 +19,51 @@ export default {
     const assignmentStmt = db.prepare(
       `INSERT INTO ${tableName(assignment)} (${colName(assignment, 'id')}, ${colName(assignment, 'teacher_id')}, ${colName(assignment, 'archived_at')}, ${colName(assignment, 'created_at')}) VALUES (?, ?, ?, ?)`,
     );
-    assignmentStmt.run(1, 1, null, 1);
-    assignmentStmt.run(2, 2, null, 2);
+    for (let i = 1; i <= 100; i++) {
+      assignmentStmt.run(i, i % 2 === 0 ? 1 : 2, null, i);
+    }
   },
   query: builder =>
     builder[assignment.name]
-      .where(({cmp, or}) =>
-        or(cmp(colName(assignment, 'teacher_id'), '=', 1), or()),
+      .where(({and, cmp}) =>
+        and(
+          cmp(colName(assignment, 'teacher_id'), '=', 1),
+          cmp(colName(assignment, 'teacher_id'), '!=', 1),
+        ),
       )
       .orderBy(colName(assignment, 'created_at'), 'desc')
       .orderBy(colName(assignment, 'id'), 'asc'),
   expectations: {
     optimizedAST: {
       where: {
-        type: 'simple',
-        left: {type: 'column', name: 'teacher_id'},
-        op: '=',
-        right: {type: 'literal', value: 1},
+        type: 'or',
+        conditions: [],
       },
     },
     // Submitted ZQL:
     //
-    //   assignment.where(teacher_id = 1 OR FALSE)
+    //   assignment.where(teacher_id = 1 AND teacher_id != 1)
     //
     // Naive plan:
     //
     //   assignment
-    //     `-- check teacher_id = 1
-    //     `-- also carry a FALSE branch that can never match
+    //     `-- scan rows and test both predicates one row at a time
     //
     // Optimized plan:
     //
-    //   teacher_id = 1 OR FALSE
+    //   teacher_id = 1 AND teacher_id != 1
     //              |
     //              v
-    //         teacher_id = 1
+    //            FALSE
     //
     // Intuition:
     //
-    //   FALSE contributes no rows to an OR, so it should not make costing
-    //   think this query is less selective than the real teacher filter.
+    //   No row can be both teacher 1 and not teacher 1, so the planner emits
+    //   an empty query instead of scanning assignment.
     sql: [
       {
         table: 'assignment',
-        sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "teacher_id" = ? ORDER BY "created_at" desc, "id" asc',
+        sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE FALSE ORDER BY "created_at" desc, "id" asc',
       },
     ],
   },

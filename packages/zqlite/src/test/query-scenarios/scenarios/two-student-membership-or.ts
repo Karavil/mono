@@ -17,7 +17,7 @@ const assignmentToStudentRelationship = relationshipName(
 );
 
 export default {
-  name: 'OR across two membership branches flips both branches',
+  name: 'OR across two membership branches merges and flips one child scan',
   schema: educationAppSchema,
   seed: db => {
     const tables = createEducationAppTables(db);
@@ -63,28 +63,59 @@ export default {
   expectations: {
     optimizedAST: {
       where: {
-        type: 'or',
-        conditions: [
-          {
-            type: 'correlatedSubquery',
-            flip: true,
+        type: 'correlatedSubquery',
+        flip: true,
+        related: {
+          subquery: {
+            where: {
+              type: 'simple',
+              op: 'IN',
+              left: {type: 'column', name: 'student_id'},
+              right: {type: 'literal', value: ['student-1', 'student-2']},
+            },
           },
-          {
-            type: 'correlatedSubquery',
-            flip: true,
-          },
-        ],
+        },
       },
     },
     planDebug: ['flipped'],
+    // Submitted ZQL:
+    //
+    //   assignment.where(
+    //     EXISTS assignment_to_student(student_id = 'student-1')
+    //     OR EXISTS assignment_to_student(student_id = 'student-2')
+    //   )
+    //
+    // Naive plan:
+    //
+    //   assignment
+    //     |-- probe membership for student-1
+    //     `-- probe membership for student-2
+    //
+    // Optimized plan:
+    //
+    //   EXISTS membership(student_id = 'student-1')
+    //      OR
+    //   EXISTS membership(student_id = 'student-2')
+    //              |
+    //              v
+    //   EXISTS membership(student_id IN ['student-1', 'student-2'])
+    //
+    //   assignment_to_student(student_id IN ['student-1', 'student-2'])
+    //     `-- fetch assignment by assignment_id
+    //
+    // Intuition:
+    //
+    //   Both OR branches ask the same relationship for the same parent key, so
+    //   they can share one child index scan.
     sql: [
       {
         table: 'assignment_to_student',
-        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" = ? ORDER BY "assignment_id" asc, "student_id" asc',
+        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" IN (SELECT value FROM json_each(?)) ORDER BY "assignment_id" asc, "student_id" asc',
       },
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

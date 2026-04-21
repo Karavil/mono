@@ -17,45 +17,7 @@ const assignmentToStudentRelationship = relationshipName(
 );
 
 export default {
-  name: 'parent OR exists could use union roots instead of broad parent scan',
-  knownFailure: {
-    reason:
-      'A mixed OR with one parent predicate and one child exists can be served as a union of two selective roots. The planner currently keeps a broad parent root for the parent side and a flipped child root for the child side.',
-    current: `
-OR
-  assignment.teacher_id = 1
-  exists assignment_to_student where student_id = student-1
-
-Plan shape today:
-
-assignment all rows
-assignment_to_student student-1 => assignment
-`,
-    desired: `
-OR as two selective roots:
-
-assignment teacher_id = 1
-assignment_to_student student-1 => assignment
-
-Then merge rows by assignment id.
-`,
-    currentSQL: [
-      {
-        table: 'assignment',
-        sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" ORDER BY "created_at" desc, "id" asc',
-      },
-      {
-        table: 'assignment_to_student',
-        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" = ? ORDER BY "assignment_id" asc, "student_id" asc',
-      },
-      {
-        table: 'assignment',
-        sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
-      },
-    ],
-    engineIdea:
-      'Add an OR union plan node that can execute each branch from its cheapest root, merge rows by primary key, and preserve the requested ordering after the union.',
-  },
+  name: 'parent OR exists uses union roots instead of broad parent scan',
   schema: educationAppSchema,
   seed: db => {
     const tables = createEducationAppTables(db);
@@ -93,6 +55,46 @@ Then merge rows by assignment id.
       .orderBy(colName(assignment, 'created_at'), 'desc')
       .orderBy(colName(assignment, 'id'), 'asc'),
   expectations: {
+    optimizedAST: {
+      where: {
+        type: 'or',
+        conditions: [
+          {},
+          {
+            type: 'correlatedSubquery',
+            flip: true,
+          },
+        ],
+      },
+    },
+    planDebug: ['FO ⋈ assignment_to_student: flipped'],
+    // Submitted ZQL:
+    //
+    //   assignment.where(
+    //     teacher_id = 1
+    //     OR EXISTS assignment_to_student(student_id = 'student-1')
+    //   )
+    //
+    // Naive plan:
+    //
+    //   assignment
+    //     |-- check teacher_id = 1
+    //     `-- if needed, probe membership by assignment_id
+    //
+    // Optimized plan:
+    //
+    //   assignment(teacher_id = 1) -------------------------------.
+    //                                                             +-- union
+    //   assignment_to_student(student_id = 'student-1') -> parent -'
+    //                                                             |
+    //                                                             v
+    //                                                     assignment ids
+    //
+    // Intuition:
+    //
+    //   Each OR branch gets its best root. Parent matches come from the
+    //   teacher index, membership matches come from the child index, and the
+    //   resulting assignment ids are merged.
     sql: [
       {
         table: 'assignment',
@@ -105,6 +107,7 @@ Then merge rows by assignment id.
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

@@ -60,6 +60,27 @@ export default {
       },
     },
     planDebug: ['flipped'],
+    // Submitted ZQL:
+    //
+    //   assignment
+    //     .where(archived_at IS null)
+    //     .whereExists(assignment_to_student, student_id = 'student-1')
+    //
+    // Naive plan:
+    //
+    //   assignment(archived_at IS null)
+    //     `-- for each assignment, probe membership by assignment_id
+    //
+    // Optimized plan:
+    //
+    //   assignment_to_student(student_id = 'student-1')
+    //     `-- fetch assignment by assignment_id
+    //         `-- keep it only if archived_at IS null
+    //
+    // Intuition:
+    //
+    //   The student membership index is smaller than the live assignment set,
+    //   so it is cheaper to start from the child row and look up its parent.
     sql: [
       {
         table: 'assignment_to_student',
@@ -68,6 +89,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? AND "archived_at" IS ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

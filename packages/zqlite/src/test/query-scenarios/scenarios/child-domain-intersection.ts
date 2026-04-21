@@ -17,7 +17,7 @@ const assignmentToStudentRelationship = relationshipName(
 );
 
 export default {
-  name: 'duplicate exists OR could dedupe before planning',
+  name: 'child IN plus exclusion narrows before auto flipping',
   schema: educationAppSchema,
   seed: db => {
     const tables = createEducationAppTables(db);
@@ -36,25 +36,18 @@ export default {
     );
     membershipStmt.run(101, 'student-1', 101);
     membershipStmt.run(102, 'student-1', 102);
-    membershipStmt.run(103, 'student-1', 103);
+    membershipStmt.run(1_500, 'student-2', 1_500);
   },
   query: builder =>
     builder[assignment.name]
-      .where(({exists, or}) =>
-        or(
-          exists(assignmentToStudentRelationship, q =>
-            q.where(
-              colName(assignmentToStudent, 'student_id'),
-              '=',
+      .whereExists(assignmentToStudentRelationship, q =>
+        q.where(({and, cmp}) =>
+          and(
+            cmp(colName(assignmentToStudent, 'student_id'), 'IN', [
               'student-1',
-            ),
-          ),
-          exists(assignmentToStudentRelationship, q =>
-            q.where(
-              colName(assignmentToStudent, 'student_id'),
-              '=',
-              'student-1',
-            ),
+              'student-2',
+            ]),
+            cmp(colName(assignmentToStudent, 'student_id'), '!=', 'student-2'),
           ),
         ),
       )
@@ -65,35 +58,49 @@ export default {
       where: {
         type: 'correlatedSubquery',
         flip: true,
+        related: {
+          subquery: {
+            where: {
+              type: 'simple',
+              op: '=',
+              left: {type: 'column', name: 'student_id'},
+              right: {type: 'literal', value: 'student-1'},
+            },
+          },
+        },
       },
     },
+    planDebug: ['flipped'],
     // Submitted ZQL:
     //
-    //   assignment.where(
-    //     EXISTS assignment_to_student(student_id = 'student-1')
-    //     OR EXISTS assignment_to_student(student_id = 'student-1')
+    //   assignment.whereExists(
+    //     assignment_to_student,
+    //     student_id IN ['student-1', 'student-2']
+    //       AND student_id != 'student-2'
     //   )
     //
     // Naive plan:
     //
     //   assignment
-    //     |-- probe membership for student-1
-    //     `-- probe membership for student-1 again
+    //     `-- for each assignment, probe membership by assignment_id
+    //         and evaluate both student predicates
     //
     // Optimized plan:
     //
-    //   identical EXISTS branches
+    //   student_id IN ['student-1', 'student-2']
+    //     AND student_id != 'student-2'
     //              |
     //              v
-    //   EXISTS membership(student_id = 'student-1')
+    //        student_id = 'student-1'
     //
     //   assignment_to_student(student_id = 'student-1')
     //     `-- fetch assignment by assignment_id
     //
     // Intuition:
     //
-    //   Running the same child lookup twice cannot add rows, so the planner
-    //   keeps one branch and flips it to the membership index.
+    //   The child filter simplifies to one student before planning, so the
+    //   planner starts from the small membership index instead of walking every
+    //   assignment.
     sql: [
       {
         table: 'assignment_to_student',
@@ -102,7 +109,7 @@ export default {
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
-        calls: 3,
+        calls: 2,
       },
     ],
   },

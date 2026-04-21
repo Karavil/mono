@@ -58,14 +58,42 @@ export default {
       },
     },
     planDebug: ['flipped'],
+    // Submitted ZQL:
+    //
+    //   assignment.whereExists(
+    //     assignment_to_student,
+    //     student_id = 'student-1' OR student_id = 'student-2'
+    //   )
+    //
+    // Naive plan:
+    //
+    //   assignment
+    //     `-- for each assignment, probe membership by assignment_id
+    //         and test both student equality branches
+    //
+    // Optimized plan:
+    //
+    //   student_id = 'student-1' OR student_id = 'student-2'
+    //              |
+    //              v
+    //   student_id IN ['student-1', 'student-2']
+    //
+    //   assignment_to_student(student_id IN ['student-1', 'student-2'])
+    //     `-- fetch assignment by assignment_id
+    //
+    // Intuition:
+    //
+    //   A same column OR inside the child query is one IN lookup, and that
+    //   lookup is selective enough to become the root.
     sql: [
       {
         table: 'assignment_to_student',
-        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE ("student_id" = ? OR "student_id" = ?) ORDER BY "assignment_id" asc, "student_id" asc',
+        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" IN (SELECT value FROM json_each(?)) ORDER BY "assignment_id" asc, "student_id" asc',
       },
       {
         table: 'assignment',
         sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
+        calls: 3,
       },
     ],
   },

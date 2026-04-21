@@ -7,6 +7,18 @@ import {
 import type {educationAppSchema} from './test/query-scenarios/education-app.ts';
 import scenarios from './test/query-scenarios/scenarios/index.ts';
 
+// Scenario comments use one visual legend:
+//
+//   Submitted ZQL:  the filter shape the user wrote.
+//   Naive plan:     the straightforward parent first execution we avoid.
+//   Optimized plan: the physical SQL order this test expects.
+//   Intuition:      why the optimized plan is cheaper or clearer.
+//
+//   A -> B       means scan A first, then look up B.
+//
+//   left scan  --.
+//                +-- union or intersect parent ids
+//   right scan -'
 for (const scenario of scenarios as readonly QueryScenario<
   typeof educationAppSchema
 >[]) {
@@ -44,5 +56,8 @@ function assertScenarioExpectations(
   }
   if (expectations.sql) {
     expect(result.sql).toEqual(expectations.sql);
+  }
+  if (expectations.rows) {
+    expect(result.rows).toEqual(expectations.rows);
   }
 }

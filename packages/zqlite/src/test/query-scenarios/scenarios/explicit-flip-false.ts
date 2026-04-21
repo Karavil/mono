@@ -60,6 +60,32 @@ export default {
         ],
       },
     },
+    // Submitted ZQL:
+    //
+    //   assignment
+    //     .where(archived_at IS null)
+    //     .whereExists(assignment_to_student, student_id = 'student-1', {
+    //       flip: false,
+    //     })
+    //
+    // Naive plan:
+    //
+    //   assignment(archived_at IS null)
+    //     `-- for each assignment, probe membership by assignment_id
+    //
+    // Optimized plan:
+    //
+    //   assignment(archived_at IS null)
+    //     `-- probe assignment_to_student(
+    //           assignment_id = current assignment.id,
+    //           student_id = 'student-1'
+    //         )
+    //
+    // Intuition:
+    //
+    //   The user explicitly pinned the parent as the root. The 26 calls are the
+    //   repeated per assignment probes plus the final probe that exhausts the
+    //   parent stream.
     sql: [
       {
         table: 'assignment',
@@ -68,6 +94,7 @@ export default {
       {
         table: 'assignment_to_student',
         sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "assignment_id" = ? AND "student_id" = ? ORDER BY "assignment_id" asc, "student_id" asc',
+        calls: 26,
       },
     ],
   },

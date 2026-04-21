@@ -2,15 +2,22 @@ import type {QueryScenario} from '../../query-scenario.ts';
 import {
   colName,
   createEducationAppTables,
+  educationAppRelationships,
   educationAppSchema,
   educationAppTables,
+  relationshipName,
   tableName,
 } from '../education-app.ts';
 
 const assignment = educationAppTables.assignment;
+const assignmentToStudent = educationAppTables.assignment_to_student;
+const assignmentToStudentRelationship = relationshipName(
+  educationAppRelationships.assignment,
+  'assignment_to_student',
+);
 
 export default {
-  name: 'OR with false branch keeps surviving teacher predicate',
+  name: 'OR with impossible exists keeps only parent predicate',
   schema: educationAppSchema,
   seed: db => {
     const tables = createEducationAppTables(db);
@@ -19,13 +26,19 @@ export default {
     const assignmentStmt = db.prepare(
       `INSERT INTO ${tableName(assignment)} (${colName(assignment, 'id')}, ${colName(assignment, 'teacher_id')}, ${colName(assignment, 'archived_at')}, ${colName(assignment, 'created_at')}) VALUES (?, ?, ?, ?)`,
     );
-    assignmentStmt.run(1, 1, null, 1);
-    assignmentStmt.run(2, 2, null, 2);
+    for (let i = 1; i <= 2_000; i++) {
+      assignmentStmt.run(i, i % 100 === 0 ? 1 : 2, null, i);
+    }
   },
   query: builder =>
     builder[assignment.name]
-      .where(({cmp, or}) =>
-        or(cmp(colName(assignment, 'teacher_id'), '=', 1), or()),
+      .where(({cmp, exists, or}) =>
+        or(
+          cmp(colName(assignment, 'teacher_id'), '=', 1),
+          exists(assignmentToStudentRelationship, q =>
+            q.where(colName(assignmentToStudent, 'student_id'), 'IN', []),
+          ),
+        ),
       )
       .orderBy(colName(assignment, 'created_at'), 'desc')
       .orderBy(colName(assignment, 'id'), 'asc'),
@@ -40,15 +53,20 @@ export default {
     },
     // Submitted ZQL:
     //
-    //   assignment.where(teacher_id = 1 OR FALSE)
+    //   assignment.where(
+    //     teacher_id = 1
+    //     OR EXISTS assignment_to_student(student_id IN [])
+    //   )
     //
     // Naive plan:
     //
     //   assignment
-    //     `-- check teacher_id = 1
-    //     `-- also carry a FALSE branch that can never match
+    //     |-- keep rows where teacher_id = 1
+    //     `-- also ask membership for an empty student set
     //
     // Optimized plan:
+    //
+    //   EXISTS membership(student_id IN []) -> FALSE
     //
     //   teacher_id = 1 OR FALSE
     //              |
@@ -57,8 +75,8 @@ export default {
     //
     // Intuition:
     //
-    //   FALSE contributes no rows to an OR, so it should not make costing
-    //   think this query is less selective than the real teacher filter.
+    //   An empty IN list cannot find a child row, so the OR falls back to the
+    //   only branch that can return assignments.
     sql: [
       {
         table: 'assignment',
