@@ -18,40 +18,6 @@ const assignmentToStudentRelationship = relationshipName(
 
 export default {
   name: 'duplicate exists OR could dedupe before planning',
-  knownFailure: {
-    reason:
-      'A OR A is exactly A, but duplicate exists branches still reach join enumeration as separate correlated subqueries.',
-    current: `
-OR
-  exists assignment_to_student where student_id = student-1
-  exists assignment_to_student where student_id = student-1
-
-Plan shape today:
-
-two equivalent exists branches enter the planner
-`,
-    desired: `
-Deduped predicate:
-
-exists assignment_to_student where student_id = student-1
-
-Desired plan shape:
-
-assignment_to_student student-1 => assignment
-`,
-    currentSQL: [
-      {
-        table: 'assignment_to_student',
-        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" = ? ORDER BY "assignment_id" asc, "student_id" asc',
-      },
-      {
-        table: 'assignment',
-        sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
-      },
-    ],
-    engineIdea:
-      'Add canonical condition keys during boolean normalization. Use them to collapse duplicate OR branches and duplicate AND branches before costing.',
-  },
   schema: educationAppSchema,
   seed: db => {
     const tables = createEducationAppTables(db);

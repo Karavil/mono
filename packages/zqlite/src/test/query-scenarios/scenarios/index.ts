@@ -12,12 +12,14 @@ import sharedParentFilterOrFactor from './shared-parent-filter-or-factor.ts';
 import singleExistsChildOr from './single-exists-child-or.ts';
 import studentMembershipMixedOr from './student-membership-mixed-or.ts';
 import studentMembershipSimpleExists from './student-membership-simple-exists.ts';
+import teacherFilterOrIn from './teacher-filter-or-in.ts';
 import teacherFilterWithMembership from './teacher-filter-with-membership.ts';
 import twoStudentMembershipOr from './two-student-membership-or.ts';
 
 export default [
   studentMembershipMixedOr,
   studentMembershipSimpleExists,
+  teacherFilterOrIn,
   teacherFilterWithMembership,
   explicitFlipFalse,
   explicitFlipTrue,

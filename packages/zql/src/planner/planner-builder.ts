@@ -9,6 +9,7 @@ import type {
   Disjunction,
 } from '../../../zero-protocol/src/ast.ts';
 import {planIdSymbol} from '../../../zero-protocol/src/ast.ts';
+import {normalizePlannerAST} from './condition-normalizer.ts';
 import type {ConnectionCostModel} from './planner-connection.ts';
 import type {PlannerConstraint} from './planner-constraint.ts';
 import type {PlanDebugger} from './planner-debug.ts';
@@ -314,9 +315,10 @@ export function planQuery(
   planDebugger?: PlanDebugger,
   lc?: LogContext,
 ): AST {
-  const plans = buildPlanGraph(ast, model, true);
+  const normalizedAST = normalizePlannerAST(ast);
+  const plans = buildPlanGraph(normalizedAST, model, true);
   planRecursively(plans, planDebugger, lc);
-  return applyPlansToAST(ast, plans);
+  return applyPlansToAST(normalizedAST, plans);
 }
 
 function applyToCondition(

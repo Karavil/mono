@@ -18,42 +18,6 @@ const assignmentToStudentRelationship = relationshipName(
 
 export default {
   name: 'same relationship OR could merge into one flipped membership scan',
-  knownFailure: {
-    reason:
-      'The planner currently flips each sibling exists independently. The desired plan would rewrite the OR into one exists over the same relationship, then flip that single child scan.',
-    current: `
-OR
-  exists assignment_to_student where student_id = student-1
-  exists assignment_to_student where student_id = student-2
-
-Plan shape today:
-
-assignment_to_student student-1 => assignment
-assignment_to_student student-2 => assignment
-`,
-    desired: `
-exists assignment_to_student where:
-  student_id = student-1
-  OR
-  student_id = student-2
-
-Desired plan shape:
-
-assignment_to_student student-1 OR student-2 => assignment
-`,
-    currentSQL: [
-      {
-        table: 'assignment_to_student',
-        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" = ? ORDER BY "assignment_id" asc, "student_id" asc',
-      },
-      {
-        table: 'assignment',
-        sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? ORDER BY "created_at" desc, "id" asc',
-      },
-    ],
-    engineIdea:
-      'Add a boolean normalization pass that recognizes OR siblings with the same relationship, same correlation, and same exists options. Merge the child filters under one child OR before join enumeration.',
-  },
   schema: educationAppSchema,
   seed: db => {
     const tables = createEducationAppTables(db);
@@ -97,11 +61,6 @@ assignment_to_student student-1 OR student-2 => assignment
       .orderBy(colName(assignment, 'created_at'), 'desc')
       .orderBy(colName(assignment, 'id'), 'asc'),
   expectations: {
-    // Current optimized AST keeps an OR with two flipped correlated subqueries.
-    // That means the optimized query shape is effectively two sibling child
-    // scans, each filtering one student_id, followed by parent lookups. The
-    // desired optimized AST is one flipped correlated subquery whose child
-    // filter is student-1 OR student-2, so one child scan feeds parent lookups.
     optimizedAST: {
       where: {
         type: 'correlatedSubquery',
@@ -111,7 +70,7 @@ assignment_to_student student-1 OR student-2 => assignment
     sql: [
       {
         table: 'assignment_to_student',
-        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE ("student_id" = ? OR "student_id" = ?) ORDER BY "assignment_id" asc, "student_id" asc',
+        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" IN (SELECT value FROM json_each(?)) ORDER BY "assignment_id" asc, "student_id" asc',
       },
       {
         table: 'assignment',

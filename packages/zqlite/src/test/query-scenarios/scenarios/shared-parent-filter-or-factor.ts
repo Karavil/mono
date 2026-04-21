@@ -18,46 +18,6 @@ const assignmentToStudentRelationship = relationshipName(
 
 export default {
   name: 'shared parent filter across OR could factor before flipping child',
-  knownFailure: {
-    reason:
-      'Both OR branches repeat the same parent predicate. Factoring that predicate out would leave one same relationship child OR that can flip as a single membership scan.',
-    current: `
-OR
-  AND
-    archived_at IS null
-    exists student-1
-  AND
-    archived_at IS null
-    exists student-2
-
-Plan shape today:
-
-student-1 => assignment with archived_at
-student-2 => assignment with archived_at
-`,
-    desired: `
-AND
-  archived_at IS null
-  exists child where:
-    student-1 OR student-2
-
-Desired plan shape:
-
-assignment_to_student student-1 OR student-2 => assignment archived_at IS null
-`,
-    currentSQL: [
-      {
-        table: 'assignment_to_student',
-        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" = ? ORDER BY "assignment_id" asc, "student_id" asc',
-      },
-      {
-        table: 'assignment',
-        sql: 'SELECT "id","teacher_id","archived_at","created_at" FROM "assignment" WHERE "id" = ? AND ("archived_at" IS ? OR "archived_at" IS ?) ORDER BY "created_at" desc, "id" asc',
-      },
-    ],
-    engineIdea:
-      'Run a small boolean algebra normalization before join enumeration. Factor common simple parent predicates out of OR branches, then run the same relationship OR merge pass on the remaining child predicates.',
-  },
   schema: educationAppSchema,
   seed: db => {
     const tables = createEducationAppTables(db);
@@ -123,7 +83,10 @@ assignment_to_student student-1 OR student-2 => assignment archived_at IS null
             related: {
               subquery: {
                 where: {
-                  type: 'or',
+                  type: 'simple',
+                  op: 'IN',
+                  left: {type: 'column', name: 'student_id'},
+                  right: {type: 'literal', value: ['student-1', 'student-2']},
                 },
               },
             },
@@ -134,7 +97,7 @@ assignment_to_student student-1 OR student-2 => assignment archived_at IS null
     sql: [
       {
         table: 'assignment_to_student',
-        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE ("student_id" = ? OR "student_id" = ?) ORDER BY "assignment_id" asc, "student_id" asc',
+        sql: 'SELECT "assignment_id","student_id","created_at" FROM "assignment_to_student" WHERE "student_id" IN (SELECT value FROM json_each(?)) ORDER BY "assignment_id" asc, "student_id" asc',
       },
       {
         table: 'assignment',
