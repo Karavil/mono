@@ -78,20 +78,40 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    // Query:
+    // Submitted ZQL:
     //
-    //   assignment
-    //     `-- archived AND (teacher OR FALSE OR EXISTS membership(student))
+    //   assignment.where(
+    //     archived_at IS null
+    //     AND (
+    //       teacher_id = 1
+    //       OR FALSE
+    //       OR EXISTS assignment_to_student(student_id = 'student-1')
+    //     )
+    //   )
     //
-    // Rewrite:
+    // Naive plan:
     //
-    //   remove FALSE from the OR
+    //   assignment(archived_at IS null)
+    //     |-- check teacher_id = 1
+    //     |-- carry a FALSE branch that can never match
+    //     `-- if needed, probe membership by assignment_id
     //
-    // Scan plan:
+    // Optimized plan:
     //
-    //   assignment(archived), teacher checked in pipeline --.
-    //                                                       +-- union assignment.id
-    //   membership(student) -> assignment(id, archived) ----'
+    //   teacher_id = 1 OR FALSE OR EXISTS membership(...)
+    //              |
+    //              v
+    //   teacher_id = 1 OR EXISTS membership(...)
+    //
+    //   assignment(archived_at IS null, teacher_id = 1) ----------.
+    //                                                             +-- union
+    //   assignment_to_student(student_id = 'student-1') -> parent -'
+    //       `-- keep parent only if archived_at IS null
+    //
+    // Intuition:
+    //
+    //   The FALSE branch disappears before costing, then the remaining OR gets
+    //   the same split root treatment as the mixed parent and child case.
     sql: [
       {
         table: 'assignment',

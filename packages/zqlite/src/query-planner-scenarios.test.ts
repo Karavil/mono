@@ -9,9 +9,10 @@ import scenarios from './test/query-scenarios/scenarios/index.ts';
 
 // Scenario comments use one visual legend:
 //
-//   Query:     the logical ZQL filter the user wrote.
-//   Rewrite:   pure filter simplification, when one happens.
-//   Scan plan: the physical SQL order the optimized pipeline produces.
+//   Submitted ZQL:  the filter shape the user wrote.
+//   Naive plan:     the straightforward parent first execution we avoid.
+//   Optimized plan: the physical SQL order this test expects.
+//   Intuition:      why the optimized plan is cheaper or clearer.
 //
 //   A -> B       means scan A first, then look up B.
 //

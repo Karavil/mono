@@ -94,19 +94,38 @@ export default {
         ],
       },
     },
-    // Query:
+    // Submitted ZQL:
     //
-    //   archived AND EXISTS membership(student = 1)
-    //        OR
-    //   archived AND EXISTS membership(student = 2)
+    //   assignment.where(
+    //     (archived_at IS null
+    //       AND EXISTS assignment_to_student(student_id = 'student-1'))
+    //     OR
+    //     (archived_at IS null
+    //       AND EXISTS assignment_to_student(student_id = 'student-2'))
+    //   )
     //
-    // Rewrite:
+    // Naive plan:
     //
-    //   archived AND EXISTS membership(student IN [1, 2])
+    //   assignment
+    //     |-- branch 1 checks archived_at, then probes student-1
+    //     `-- branch 2 checks archived_at again, then probes student-2
     //
-    // Scan plan:
+    // Optimized plan:
     //
-    //   membership(student IN [1, 2]) -> assignment(id, archived)
+    //   shared archived_at IS null
+    //              |
+    //              v
+    //   archived_at IS null
+    //     AND EXISTS membership(student_id IN ['student-1', 'student-2'])
+    //
+    //   assignment_to_student(student_id IN ['student-1', 'student-2'])
+    //     `-- fetch assignment by assignment_id
+    //         `-- keep it only if archived_at IS null
+    //
+    // Intuition:
+    //
+    //   The duplicate parent filter is factored once, and the two child
+    //   branches become one membership index scan.
     sql: [
       {
         table: 'assignment_to_student',

@@ -60,18 +60,32 @@ export default {
         ],
       },
     },
-    // Query:
+    // Submitted ZQL:
     //
-    //   assignment(archived)
-    //     `-- EXISTS membership(student), flip = false
+    //   assignment
+    //     .where(archived_at IS null)
+    //     .whereExists(assignment_to_student, student_id = 'student-1', {
+    //       flip: false,
+    //     })
     //
-    // Scan plan:
+    // Naive plan:
     //
-    //   assignment(archived) -> membership(assignment_id, student)
+    //   assignment(archived_at IS null)
+    //     `-- for each assignment, probe membership by assignment_id
     //
-    // The user pinned the root at assignment, so we do not flip.
-    // calls: 26 includes the repeated per-assignment membership probes plus
-    // the final probe used while exhausting the parent stream.
+    // Optimized plan:
+    //
+    //   assignment(archived_at IS null)
+    //     `-- probe assignment_to_student(
+    //           assignment_id = current assignment.id,
+    //           student_id = 'student-1'
+    //         )
+    //
+    // Intuition:
+    //
+    //   The user explicitly pinned the parent as the root. The 26 calls are the
+    //   repeated per assignment probes plus the final probe that exhausts the
+    //   parent stream.
     sql: [
       {
         table: 'assignment',

@@ -40,18 +40,26 @@ export default {
         conditions: [],
       },
     },
-    // Query:
+    // Submitted ZQL:
     //
-    //   teacher_id = 1
-    //        AND
-    //   teacher_id != 1
+    //   assignment.where(teacher_id = 1 AND teacher_id != 1)
     //
-    // Rewrite:
+    // Naive plan:
     //
-    //   [teacher 1] intersect [not teacher 1]
-    //                 |
-    //                 v
-    //              FALSE
+    //   assignment
+    //     `-- scan rows and test both predicates one row at a time
+    //
+    // Optimized plan:
+    //
+    //   teacher_id = 1 AND teacher_id != 1
+    //              |
+    //              v
+    //            FALSE
+    //
+    // Intuition:
+    //
+    //   No row can be both teacher 1 and not teacher 1, so the planner emits
+    //   an empty query instead of scanning assignment.
     sql: [
       {
         table: 'assignment',

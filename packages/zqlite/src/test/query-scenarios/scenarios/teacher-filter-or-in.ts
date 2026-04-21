@@ -42,15 +42,26 @@ export default {
         right: {type: 'literal', value: [1, 2]},
       },
     },
-    // Query:
+    // Submitted ZQL:
     //
-    //   teacher_id = 1
-    //        OR
-    //   teacher_id = 2
+    //   assignment.where(teacher_id = 1 OR teacher_id = 2)
     //
-    // Rewrite:
+    // Naive plan:
     //
-    //   teacher_id IN [1, 2]
+    //   assignment
+    //     `-- test teacher_id = 1
+    //     `-- test teacher_id = 2
+    //
+    // Optimized plan:
+    //
+    //   teacher_id = 1 OR teacher_id = 2
+    //              |
+    //              v
+    //        teacher_id IN [1, 2]
+    //
+    // Intuition:
+    //
+    //   Two equality checks on the same column are one indexed IN lookup.
     sql: [
       {
         table: 'assignment',

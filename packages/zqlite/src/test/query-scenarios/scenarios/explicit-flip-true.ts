@@ -60,16 +60,29 @@ export default {
         ],
       },
     },
-    // Query:
+    // Submitted ZQL:
     //
-    //   assignment(archived)
-    //     `-- EXISTS membership(student), flip = true
+    //   assignment
+    //     .where(archived_at IS null)
+    //     .whereExists(assignment_to_student, student_id = 'student-1', {
+    //       flip: true,
+    //     })
     //
-    // Scan plan:
+    // Naive plan:
     //
-    //   membership(student) -> assignment(id, archived)
+    //   assignment(archived_at IS null)
+    //     `-- for each assignment, probe membership by assignment_id
     //
-    // The user pinned the root at membership, so we start there.
+    // Optimized plan:
+    //
+    //   assignment_to_student(student_id = 'student-1')
+    //     `-- fetch assignment by assignment_id
+    //         `-- keep it only if archived_at IS null
+    //
+    // Intuition:
+    //
+    //   The user explicitly asked to flip the EXISTS, so the child side is the
+    //   root even before the cost model gets a vote.
     sql: [
       {
         table: 'assignment_to_student',

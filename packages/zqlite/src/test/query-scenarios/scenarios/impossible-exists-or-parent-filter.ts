@@ -51,18 +51,32 @@ export default {
         right: {type: 'literal', value: 1},
       },
     },
-    // Query:
+    // Submitted ZQL:
     //
-    //   teacher_id = 1
-    //        OR
-    //   EXISTS membership(student IN [])
+    //   assignment.where(
+    //     teacher_id = 1
+    //     OR EXISTS assignment_to_student(student_id IN [])
+    //   )
     //
-    // Rewrite:
+    // Naive plan:
+    //
+    //   assignment
+    //     |-- keep rows where teacher_id = 1
+    //     `-- also ask membership for an empty student set
+    //
+    // Optimized plan:
+    //
+    //   EXISTS membership(student_id IN []) -> FALSE
     //
     //   teacher_id = 1 OR FALSE
-    //                 |
-    //                 v
-    //          teacher_id = 1
+    //              |
+    //              v
+    //         teacher_id = 1
+    //
+    // Intuition:
+    //
+    //   An empty IN list cannot find a child row, so the OR falls back to the
+    //   only branch that can return assignments.
     sql: [
       {
         table: 'assignment',

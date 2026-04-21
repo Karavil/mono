@@ -67,19 +67,33 @@ export default {
         flip: true,
       },
     },
-    // Query:
+    // Submitted ZQL:
     //
-    //   EXISTS membership(student = 1)
-    //        OR
-    //   EXISTS membership(student = 1)
+    //   assignment.where(
+    //     EXISTS assignment_to_student(student_id = 'student-1')
+    //     OR EXISTS assignment_to_student(student_id = 'student-1')
+    //   )
     //
-    // Rewrite:
+    // Naive plan:
     //
-    //   identical branches collapse to one
+    //   assignment
+    //     |-- probe membership for student-1
+    //     `-- probe membership for student-1 again
     //
-    // Scan plan:
+    // Optimized plan:
     //
-    //   membership(student = 1) -> assignment(id)
+    //   identical EXISTS branches
+    //              |
+    //              v
+    //   EXISTS membership(student_id = 'student-1')
+    //
+    //   assignment_to_student(student_id = 'student-1')
+    //     `-- fetch assignment by assignment_id
+    //
+    // Intuition:
+    //
+    //   Running the same child lookup twice cannot add rows, so the planner
+    //   keeps one branch and flips it to the membership index.
     sql: [
       {
         table: 'assignment_to_student',

@@ -71,21 +71,36 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    // Query:
+    // Submitted ZQL:
+    //
+    //   assignment.whereExists(
+    //     assignment_to_student,
+    //     student_id IN ['student-1', 'student-2']
+    //       AND student_id != 'student-2'
+    //   )
+    //
+    // Naive plan:
     //
     //   assignment
-    //     `-- EXISTS membership(student IN [1, 2] AND student != 2)
+    //     `-- for each assignment, probe membership by assignment_id
+    //         and evaluate both student predicates
     //
-    // Rewrite:
+    // Optimized plan:
     //
-    //   student IN [1, 2] AND student != 2
-    //                     |
-    //                     v
-    //                student = 1
+    //   student_id IN ['student-1', 'student-2']
+    //     AND student_id != 'student-2'
+    //              |
+    //              v
+    //        student_id = 'student-1'
     //
-    // Scan plan:
+    //   assignment_to_student(student_id = 'student-1')
+    //     `-- fetch assignment by assignment_id
     //
-    //   membership(student = 1) -> assignment(id)
+    // Intuition:
+    //
+    //   The child filter simplifies to one student before planning, so the
+    //   planner starts from the small membership index instead of walking every
+    //   assignment.
     sql: [
       {
         table: 'assignment_to_student',

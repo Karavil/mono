@@ -68,16 +68,33 @@ export default {
       },
     },
     planDebug: ['FO ⋈ assignment_to_student: flipped'],
-    // Query:
+    // Submitted ZQL:
+    //
+    //   assignment.where(
+    //     teacher_id = 1
+    //     OR EXISTS assignment_to_student(student_id = 'student-1')
+    //   )
+    //
+    // Naive plan:
     //
     //   assignment
-    //     `-- teacher OR EXISTS membership(student)
+    //     |-- check teacher_id = 1
+    //     `-- if needed, probe membership by assignment_id
     //
-    // Scan plan:
+    // Optimized plan:
     //
-    //   assignment(teacher) -----------------------.
-    //                                               +-- union assignment.id
-    //   membership(student) -> assignment(id) ------'
+    //   assignment(teacher_id = 1) -------------------------------.
+    //                                                             +-- union
+    //   assignment_to_student(student_id = 'student-1') -> parent -'
+    //                                                             |
+    //                                                             v
+    //                                                     assignment ids
+    //
+    // Intuition:
+    //
+    //   Each OR branch gets its best root. Parent matches come from the
+    //   teacher index, membership matches come from the child index, and the
+    //   resulting assignment ids are merged.
     sql: [
       {
         table: 'assignment',

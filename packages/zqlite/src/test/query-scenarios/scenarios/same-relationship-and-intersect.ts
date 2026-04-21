@@ -62,21 +62,31 @@ export default {
       .orderBy(colName(assignment, 'created_at'), 'desc')
       .orderBy(colName(assignment, 'id'), 'asc'),
   expectations: {
-    // Query:
+    // Submitted ZQL:
     //
     //   assignment
-    //     |-- EXISTS membership(student = 1)
-    //     `-- EXISTS membership(student = 2)
+    //     .whereExists(assignment_to_student, student_id = 'student-1')
+    //     .whereExists(assignment_to_student, student_id = 'student-2')
     //
-    // Scan plan:
+    // Naive plan:
     //
-    //   membership(student = 1) -> assignment ids --.
-    //                                                +-- intersect assignment_id -> assignment(id)
-    //   membership(student = 2) -> assignment ids ---'
+    //   assignment
+    //     |-- probe membership for student-1
+    //     `-- probe membership for student-2
     //
-    // The assignment id must survive both child streams.
-    // The membership SQL has calls: 2 because the same SELECT text runs once
-    // for each student bind value before the assignment_id intersection.
+    // Optimized plan:
+    //
+    //   assignment_to_student(student_id = 'student-1') -> assignment_ids --.
+    //                                                               intersect
+    //   assignment_to_student(student_id = 'student-2') -> assignment_ids --'
+    //                                                               |
+    //                                                               v
+    //                                                       fetch assignment
+    //
+    // Intuition:
+    //
+    //   The same assignment id must appear in both child streams. The SQL text
+    //   has calls: 2 because it runs once per student before intersecting ids.
     sql: [
       {
         table: 'assignment_to_student',

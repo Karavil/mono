@@ -58,18 +58,33 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    // Query:
+    // Submitted ZQL:
+    //
+    //   assignment.whereExists(
+    //     assignment_to_student,
+    //     student_id = 'student-1' OR student_id = 'student-2'
+    //   )
+    //
+    // Naive plan:
     //
     //   assignment
-    //     `-- EXISTS membership(student = 1 OR student = 2)
+    //     `-- for each assignment, probe membership by assignment_id
+    //         and test both student equality branches
     //
-    // Rewrite:
+    // Optimized plan:
     //
-    //   child OR -> student IN [1, 2]
+    //   student_id = 'student-1' OR student_id = 'student-2'
+    //              |
+    //              v
+    //   student_id IN ['student-1', 'student-2']
     //
-    // Scan plan:
+    //   assignment_to_student(student_id IN ['student-1', 'student-2'])
+    //     `-- fetch assignment by assignment_id
     //
-    //   membership(student IN [1, 2]) -> assignment(id)
+    // Intuition:
+    //
+    //   A same column OR inside the child query is one IN lookup, and that
+    //   lookup is selective enough to become the root.
     sql: [
       {
         table: 'assignment_to_student',

@@ -78,19 +78,35 @@ export default {
       },
     },
     planDebug: ['flipped'],
-    // Query:
+    // Submitted ZQL:
     //
-    //   EXISTS membership(student = 1)
-    //        OR
-    //   EXISTS membership(student = 2)
+    //   assignment.where(
+    //     EXISTS assignment_to_student(student_id = 'student-1')
+    //     OR EXISTS assignment_to_student(student_id = 'student-2')
+    //   )
     //
-    // Rewrite:
+    // Naive plan:
     //
-    //   same relationship OR -> student IN [1, 2]
+    //   assignment
+    //     |-- probe membership for student-1
+    //     `-- probe membership for student-2
     //
-    // Scan plan:
+    // Optimized plan:
     //
-    //   membership(student IN [1, 2]) -> assignment(id)
+    //   EXISTS membership(student_id = 'student-1')
+    //      OR
+    //   EXISTS membership(student_id = 'student-2')
+    //              |
+    //              v
+    //   EXISTS membership(student_id IN ['student-1', 'student-2'])
+    //
+    //   assignment_to_student(student_id IN ['student-1', 'student-2'])
+    //     `-- fetch assignment by assignment_id
+    //
+    // Intuition:
+    //
+    //   Both OR branches ask the same relationship for the same parent key, so
+    //   they can share one child index scan.
     sql: [
       {
         table: 'assignment_to_student',

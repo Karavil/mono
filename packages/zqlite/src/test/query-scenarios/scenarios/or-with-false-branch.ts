@@ -38,18 +38,27 @@ export default {
         right: {type: 'literal', value: 1},
       },
     },
-    // Query:
+    // Submitted ZQL:
     //
-    //   teacher_id = 1
-    //        OR
-    //   FALSE
+    //   assignment.where(teacher_id = 1 OR FALSE)
     //
-    // Rewrite:
+    // Naive plan:
     //
-    //   FALSE adds no rows
-    //          |
-    //          v
-    //   teacher_id = 1
+    //   assignment
+    //     `-- check teacher_id = 1
+    //     `-- also carry a FALSE branch that can never match
+    //
+    // Optimized plan:
+    //
+    //   teacher_id = 1 OR FALSE
+    //              |
+    //              v
+    //         teacher_id = 1
+    //
+    // Intuition:
+    //
+    //   FALSE contributes no rows to an OR, so it should not make costing
+    //   think this query is less selective than the real teacher filter.
     sql: [
       {
         table: 'assignment',
