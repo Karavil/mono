@@ -49,6 +49,21 @@ test('rewrites same-column OR equalities to IN', () => {
       ],
     }),
   ).toEqual(eq('status', 'active'));
+
+  expect(
+    normalizeWhere({
+      type: 'or',
+      conditions: [
+        inCondition('status', 'IN', ['active', 'pending']),
+        inCondition('status', 'IN', ['pending', 'draft']),
+      ],
+    }),
+  ).toEqual({
+    type: 'simple',
+    left: {type: 'column', name: 'status'},
+    op: 'IN',
+    right: {type: 'literal', value: ['active', 'pending', 'draft']},
+  });
 });
 
 test('normalizes degenerate IN predicates', () => {

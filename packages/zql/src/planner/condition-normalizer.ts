@@ -155,91 +155,103 @@ function buildOr(conditions: readonly Condition[]): Condition {
   }
 }
 
-type InMergeCandidate = {
-  readonly left: ValuePosition;
-  readonly values: readonly InLiteralValue[];
-  readonly isAlreadyIn: boolean;
-};
-
 type InLiteralValue = string | number | boolean;
 
-type InMergeGroup = {
+type ColumnDomainBase = {
   readonly left: ValuePosition;
-  readonly firstIndex: number;
-  readonly values: InLiteralValue[];
-  readonly valueKeys: Set<string>;
-  changed: boolean;
 };
 
-type DomainCandidate = {
-  readonly left: ValuePosition;
-  readonly include?: readonly InLiteralValue[] | undefined;
+// include undefined means the column can still take any literal value.
+// exclude then removes known impossible values from that open domain.
+type ColumnDomain = ColumnDomainBase & {
+  readonly include: readonly InLiteralValue[] | undefined;
   readonly exclude: readonly InLiteralValue[];
-  readonly isAlreadyCompound: boolean;
 };
 
-type DomainGroup = {
-  readonly left: ValuePosition;
+type PositiveColumnDomain = ColumnDomainBase & {
+  readonly include: readonly InLiteralValue[];
+};
+
+type DomainPredicate<TDomain extends ColumnDomainBase> = {
+  readonly domain: TDomain;
+  readonly changed: boolean;
+};
+
+type DomainGroup<TDomain extends ColumnDomainBase> = {
   readonly firstIndex: number;
-  include: InLiteralValue[] | undefined;
-  readonly exclude: InLiteralValue[];
-  readonly excludeKeys: Set<string>;
+  domain: TDomain;
   changed: boolean;
+};
+
+type DomainRewrite<TDomain extends ColumnDomainBase> = {
+  readonly extract: (
+    condition: Condition,
+  ) => DomainPredicate<TDomain> | undefined;
+  readonly combine: (left: TDomain, right: TDomain) => TDomain;
+  readonly lower: (domain: TDomain) => Condition;
 };
 
 function intersectEquivalentAndPredicates(
   conditions: readonly Condition[],
 ): Condition[] {
-  const intersected: Array<Condition | undefined> = [...conditions];
-  const groups = new Map<string, DomainGroup>();
+  return rewriteColumnDomains(conditions, {
+    extract: columnDomainFromCondition,
+    combine: intersectColumnDomains,
+    lower: columnDomainToCondition,
+  });
+}
 
+function mergeEquivalentOrPredicates(
+  conditions: readonly Condition[],
+): Condition[] {
+  return rewriteColumnDomains(conditions, {
+    extract: positiveColumnDomainFromCondition,
+    combine: unionPositiveColumnDomains,
+    lower: positiveColumnDomainToCondition,
+  });
+}
+
+function rewriteColumnDomains<TDomain extends ColumnDomainBase>(
+  conditions: readonly Condition[],
+  rewrite: DomainRewrite<TDomain>,
+): Condition[] {
+  const rewritten: Array<Condition | undefined> = [...conditions];
+  const groups = new Map<string, DomainGroup<TDomain>>();
   for (const [index, condition] of conditions.entries()) {
-    const candidate = getDomainCandidate(condition);
-    if (!candidate) {
+    const predicate = rewrite.extract(condition);
+    if (!predicate) {
       continue;
     }
 
-    const key = stableStringify(candidate.left);
+    const key = domainKey(predicate.domain);
     const group = groups.get(key);
     if (!group) {
-      const nextGroup: DomainGroup = {
-        left: candidate.left,
+      groups.set(key, {
         firstIndex: index,
-        include:
-          candidate.include === undefined
-            ? undefined
-            : dedupeInLiteralValues(candidate.include),
-        exclude: [],
-        excludeKeys: new Set<string>(),
-        changed: candidate.isAlreadyCompound,
-      };
-      groups.set(key, nextGroup);
-      addExcludedValues(nextGroup, candidate.exclude);
+        domain: predicate.domain,
+        changed: predicate.changed,
+      });
       continue;
     }
 
-    intersected[index] = undefined;
+    rewritten[index] = undefined;
     group.changed = true;
-    if (candidate.include !== undefined) {
-      group.include =
-        group.include === undefined
-          ? dedupeInLiteralValues(candidate.include)
-          : intersectInLiteralValues(group.include, candidate.include);
-    }
-    addExcludedValues(group, candidate.exclude);
+    group.domain = rewrite.combine(group.domain, predicate.domain);
   }
 
   for (const group of groups.values()) {
     if (!group.changed) {
       continue;
     }
-    intersected[group.firstIndex] = buildDomainCondition(group);
+    rewritten[group.firstIndex] = rewrite.lower(group.domain);
   }
 
-  return intersected.filter((condition): condition is Condition => !!condition);
+  return rewritten.filter((condition): condition is Condition => !!condition);
 }
 
-function getDomainCandidate(condition: Condition): DomainCandidate | undefined {
+function columnDomainFromCondition(
+  condition: Condition,
+): DomainPredicate<ColumnDomain> | undefined {
   if (condition.type !== 'simple' || condition.right.type !== 'literal') {
     return undefined;
   }
@@ -248,119 +260,108 @@ function getDomainCandidate(condition: Condition): DomainCandidate | undefined {
   switch (condition.op) {
     case '=':
       return isInLiteralValue(value)
-        ? {
-            left: condition.left,
-            include: [value],
-            exclude: [],
-            isAlreadyCompound: false,
-          }
+        ? finiteColumnDomain(condition.left, [value])
         : undefined;
     case 'IN':
       return Array.isArray(value) && value.every(isInLiteralValue)
-        ? {
-            left: condition.left,
-            include: value,
-            exclude: [],
-            isAlreadyCompound: true,
-          }
+        ? finiteColumnDomain(condition.left, value)
         : undefined;
     case '!=':
       return isInLiteralValue(value)
-        ? {
-            left: condition.left,
-            exclude: [value],
-            isAlreadyCompound: false,
-          }
+        ? excludedColumnDomain(condition.left, [value])
         : undefined;
     case 'NOT IN':
       return Array.isArray(value) &&
         value.length > 0 &&
         value.every(isInLiteralValue)
-        ? {
-            left: condition.left,
-            exclude: value,
-            isAlreadyCompound: true,
-          }
+        ? excludedColumnDomain(condition.left, value)
         : undefined;
     default:
       return undefined;
   }
 }
 
-function addExcludedValues(
-  group: DomainGroup,
-  values: readonly InLiteralValue[],
-): void {
-  for (const value of values) {
-    const key = stableStringify(value);
-    if (group.excludeKeys.has(key)) {
-      group.changed = true;
-      continue;
-    }
-    group.excludeKeys.add(key);
-    group.exclude.push(value);
+function positiveColumnDomainFromCondition(
+  condition: Condition,
+): DomainPredicate<PositiveColumnDomain> | undefined {
+  const predicate = columnDomainFromCondition(condition);
+  if (!predicate || predicate.domain.include === undefined) {
+    return undefined;
   }
+  if (predicate.domain.exclude.length > 0) {
+    return undefined;
+  }
+
+  return {
+    domain: {
+      left: predicate.domain.left,
+      include: predicate.domain.include,
+    },
+    changed: predicate.changed,
+  };
 }
 
-function buildDomainCondition(group: DomainGroup): Condition {
-  if (group.include !== undefined) {
+function finiteColumnDomain(
+  left: ValuePosition,
+  values: readonly InLiteralValue[],
+): DomainPredicate<ColumnDomain> {
+  const include = literalSet(values);
+  return {
+    domain: {left, include, exclude: []},
+    changed: include.length !== values.length,
+  };
+}
+
+function excludedColumnDomain(
+  left: ValuePosition,
+  values: readonly InLiteralValue[],
+): DomainPredicate<ColumnDomain> {
+  const exclude = literalSet(values);
+  return {
+    domain: {left, include: undefined, exclude},
+    changed: exclude.length !== values.length,
+  };
+}
+
+function intersectColumnDomains(
+  left: ColumnDomain,
+  right: ColumnDomain,
+): ColumnDomain {
+  return {
+    left: left.left,
+    include: intersectOptionalValueSets(left.include, right.include),
+    exclude: unionLiteralValues(left.exclude, right.exclude),
+  };
+}
+
+function unionPositiveColumnDomains(
+  left: PositiveColumnDomain,
+  right: PositiveColumnDomain,
+): PositiveColumnDomain {
+  return {
+    left: left.left,
+    include: unionLiteralValues(left.include, right.include),
+  };
+}
+
+function columnDomainToCondition(domain: ColumnDomain): Condition {
+  if (domain.include !== undefined) {
     return buildInCondition(
-      group.left,
-      group.include.filter(
-        value => !group.excludeKeys.has(stableStringify(value)),
-      ),
+      domain.left,
+      subtractLiteralValues(domain.include, domain.exclude),
     );
   }
-  return buildNotInCondition(group.left, group.exclude);
+  return buildNotInCondition(domain.left, domain.exclude);
 }
 
-function mergeEquivalentOrPredicates(
-  conditions: readonly Condition[],
-): Condition[] {
-  const merged: Array<Condition | undefined> = [...conditions];
-  const groups = new Map<string, InMergeGroup>();
+function positiveColumnDomainToCondition(
+  domain: PositiveColumnDomain,
+): Condition {
+  return buildInCondition(domain.left, domain.include);
+}
 
-  for (const [index, condition] of conditions.entries()) {
-    const candidate = getInMergeCandidate(condition);
-    if (!candidate) {
-      continue;
-    }
-
-    const key = stableStringify(candidate.left);
-    let group = groups.get(key);
-    if (!group) {
-      group = {
-        left: candidate.left,
-        firstIndex: index,
-        values: [],
-        valueKeys: new Set(),
-        changed: candidate.isAlreadyIn,
-      };
-      groups.set(key, group);
-    } else {
-      merged[index] = undefined;
-      group.changed = true;
-    }
-
-    for (const value of candidate.values) {
-      const valueKey = stableStringify(value);
-      if (group.valueKeys.has(valueKey)) {
-        group.changed = true;
-        continue;
-      }
-      group.valueKeys.add(valueKey);
-      group.values.push(value);
-    }
-  }
-
-  for (const group of groups.values()) {
-    if (!group.changed) {
-      continue;
-    }
-    merged[group.firstIndex] = buildInCondition(group.left, group.values);
-  }
-
-  return merged.filter((condition): condition is Condition => !!condition);
+function domainKey(domain: ColumnDomainBase): string {
+  return stableStringify(domain.left);
 }
 
 function buildInCondition(
@@ -411,40 +412,6 @@ function buildNotInCondition(
   }
 }
 
-function getInMergeCandidate(
-  condition: Condition,
-): InMergeCandidate | undefined {
-  if (condition.type !== 'simple') {
-    return undefined;
-  }
-
-  if (condition.op === '=') {
-    const value =
-      condition.right.type === 'literal' ? condition.right.value : undefined;
-    if (isInLiteralValue(value)) {
-      return {
-        left: condition.left,
-        values: [value],
-        isAlreadyIn: false,
-      };
-    }
-    return undefined;
-  }
-
-  if (condition.op === 'IN' && condition.right.type === 'literal') {
-    const value = condition.right.value;
-    if (Array.isArray(value) && value.every(isInLiteralValue)) {
-      return {
-        left: condition.left,
-        values: value,
-        isAlreadyIn: true,
-      };
-    }
-  }
-
-  return undefined;
-}
-
 function isInLiteralValue(
   value: LiteralValue | undefined,
 ): value is InLiteralValue {
@@ -454,10 +421,14 @@ function isInLiteralValue(
 function dedupeInLiteralValues(
   values: readonly InLiteralValue[],
 ): InLiteralValue[] {
+  return literalSet(values);
+}
+
+function literalSet(values: readonly InLiteralValue[]): InLiteralValue[] {
   const seen = new Set<string>();
   const deduped: InLiteralValue[] = [];
   for (const value of values) {
-    const key = stableStringify(value);
+    const key = literalValueKey(value);
     if (seen.has(key)) {
       continue;
     }
@@ -467,12 +438,54 @@ function dedupeInLiteralValues(
   return deduped;
 }
 
-function intersectInLiteralValues(
+function intersectOptionalValueSets(
+  left: readonly InLiteralValue[] | undefined,
+  right: readonly InLiteralValue[] | undefined,
+): readonly InLiteralValue[] | undefined {
+  if (left === undefined) {
+    return right;
+  }
+  if (right === undefined) {
+    return left;
+  }
+  return intersectLiteralValues(left, right);
+}
+
+function unionLiteralValues(
   left: readonly InLiteralValue[],
   right: readonly InLiteralValue[],
 ): InLiteralValue[] {
-  const rightValues = new Set(right.map(stableStringify));
-  return left.filter(value => rightValues.has(stableStringify(value)));
+  const seen = new Set(left.map(literalValueKey));
+  const union = [...left];
+  for (const value of right) {
+    const key = literalValueKey(value);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    union.push(value);
+  }
+  return union;
+}
+
+function intersectLiteralValues(
+  left: readonly InLiteralValue[],
+  right: readonly InLiteralValue[],
+): InLiteralValue[] {
+  const rightValues = new Set(right.map(literalValueKey));
+  return left.filter(value => rightValues.has(literalValueKey(value)));
+}
+
+function subtractLiteralValues(
+  values: readonly InLiteralValue[],
+  excluded: readonly InLiteralValue[],
+): InLiteralValue[] {
+  const excludedValues = new Set(excluded.map(literalValueKey));
+  return values.filter(value => !excludedValues.has(literalValueKey(value)));
+}
+
+function literalValueKey(value: InLiteralValue): string {
+  return stableStringify(value);
 }
 
 function flatten(
