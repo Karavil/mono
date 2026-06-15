@@ -109,6 +109,31 @@ test('idbName generation with URL configuration', async () => {
   }
 });
 
+test('client schema changes produce a distinct local database', async () => {
+  const zOld = new Zero({
+    userID,
+    storageKey,
+    schema,
+    kvStore: 'mem',
+  });
+  const oldSchemaVersion = zOld.schemaVersion;
+  const oldDBName = zOld.idbName;
+  await zOld.close();
+
+  const zCurrent = new Zero({
+    userID,
+    storageKey,
+    schema: schemaV2,
+    kvStore: 'mem',
+  });
+
+  expect(zCurrent.schemaVersion).not.toBe(oldSchemaVersion);
+  expect(zCurrent.idbName).not.toBe(oldDBName);
+
+  const result = await zCurrent.delete();
+  expect(result.errors).toHaveLength(0);
+});
+
 test('delete closes and removes all databases for the same zero instance', async () => {
   const userIDForDrop = 'drop-db-user';
   const storageKeyForDrop = 'drop-db-storage';

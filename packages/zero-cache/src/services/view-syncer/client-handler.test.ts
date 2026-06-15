@@ -32,6 +32,18 @@ const CLIENT_SCHEMA = {
     },
   },
 } satisfies ClientSchema;
+const CLIENT_SCHEMA_WITH_PRIVATE = {
+  tables: {
+    issues: {
+      columns: {
+        id: {type: 'string'},
+        name: {type: 'string'},
+        private: {type: 'string'},
+      },
+      primaryKey: ['id'],
+    },
+  },
+} satisfies ClientSchema;
 const CLIENT_SCHEMA_WITH_BIG = {
   tables: {
     issues: {
@@ -501,6 +513,72 @@ describe('view-syncer/client-handler', () => {
               op: 'del',
               tableName: 'issues',
               id: {id: 'foo'},
+            },
+          ],
+        },
+      ] satisfies PokePartMessage,
+      [
+        'pokeEnd',
+        {
+          cookie: '123',
+          pokeID: '123',
+        },
+      ] satisfies PokeEndMessage,
+    ]);
+    expect(err).toBeUndefined();
+  });
+
+  test('row patches include columns added to the client schema', async () => {
+    const {subscription, close} = createSubscription();
+
+    const handler = new ClientHandler(
+      lc,
+      'g1',
+      'id1',
+      'ws1',
+      SHARD,
+      '121',
+      subscription,
+    );
+    const poker = handler.startPoke(
+      {stateVersion: '123'},
+      CLIENT_SCHEMA_WITH_PRIVATE,
+    );
+    await poker.addPatch({
+      toVersion: {stateVersion: '123'},
+      patch: {
+        type: 'row',
+        op: 'put',
+        id: {schema: 'public', table: 'issues', rowKey: {id: 'bar'}},
+        contents: {
+          id: 'bar',
+          name: 'hello',
+          private: 'now configured',
+          unsafePrivate: 983712341234123412348n,
+        },
+      },
+    });
+    await poker.end({stateVersion: '123'});
+
+    const {received, err} = await close();
+
+    expect(received).toEqual([
+      [
+        'pokeStart',
+        {
+          baseCookie: '121',
+          pokeID: '123',
+        },
+      ] satisfies PokeStartMessage,
+      [
+        'pokePart',
+        {
+          pokeID: '123',
+          rowsPatch: [
+            {
+              op: 'put',
+              tableName: 'issues',
+              value: {id: 'bar', name: 'hello', private: 'now configured'},
             },
           ],
         },
